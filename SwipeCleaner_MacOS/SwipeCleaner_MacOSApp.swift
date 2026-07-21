@@ -12,6 +12,7 @@ struct SwipeCleaner_MacOSApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .tint(.purple)
         }
     }
 }
