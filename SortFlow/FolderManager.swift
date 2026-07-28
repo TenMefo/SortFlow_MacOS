@@ -9,6 +9,7 @@ import Foundation
 import AppKit
 import Combine
 import SwiftUI
+import CryptoKit
 
 enum FilterType: String, CaseIterable {
     case all = "Wszystkie"
@@ -48,6 +49,12 @@ class FolderManager: ObservableObject {
     @Published var selectedFiles: Set<URL> = []
     @Published var targetFolders: [MappedFolder] = []
     @Published var history: [FileAction] = []
+    
+    
+    // Nowe zmienne dla duplikatów
+    @Published var isScanningDuplicates = false
+    @Published var scanStatus = ""
+    @Published var duplicateGroups: [[URL]] = []
     
     var displayFiles: [URL] {
         var result = files
@@ -254,4 +261,108 @@ class FolderManager: ObservableObject {
     }
     func getFileSize(url: URL) -> Int? { try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize }
     func getCreationDate(url: URL) -> Date? { try? url.resourceValues(forKeys: [.creationDateKey]).creationDate }
+    
+    // MARK: - Logika Duplikatów
+        
+        func findDuplicates() {
+            guard let folder = currentFolder else { return }
+            isScanningDuplicates = true
+            duplicateGroups = []
+            scanStatus = "Skanowanie plików..."
+            
+            Task.detached(priority: .userInitiated) {
+                let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey]
+                var sizeDict: [Int: [URL]] = [:]
+                
+                // 1. Zbieramy pliki i grupujemy po rozmiarze (najszybszy odsiew)
+                if let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) {
+                    for case let url as URL in enumerator {
+                        if let res = try? url.resourceValues(forKeys: Set(keys)), res.isDirectory == false, let size = res.fileSize {
+                            sizeDict[size, default: []].append(url)
+                        }
+                    }
+                }
+                
+                // Bierzemy tylko te, gdzie ten sam rozmiar ma więcej niż 1 plik
+                let potentialDuplicates = sizeDict.values.filter { $0.count > 1 }
+                var finalDuplicates: [[URL]] = []
+                
+                let totalToHash = potentialDuplicates.flatMap { $0 }.count
+                var hashedCount = 0
+                
+                // 2. Hashujemy zawartość podejrzanych plików strumieniowo
+                for group in potentialDuplicates {
+                    var hashDict: [String: [URL]] = [:]
+                    for url in group {
+                        await MainActor.run { self.scanStatus = "Analiza zawartości: \(hashedCount)/\(totalToHash)" }
+                        if let fileHash = self.hashFile(url: url) {
+                            hashDict[fileHash, default: []].append(url)
+                        }
+                        hashedCount += 1
+                    }
+                    
+                    // Zapisujemy grupy, które mają ten sam hash i >1 plików
+                    for sameHashGroup in hashDict.values where sameHashGroup.count > 1 {
+                        finalDuplicates.append(sameHashGroup)
+                    }
+                }
+                
+                await MainActor.run {
+                    self.duplicateGroups = finalDuplicates
+                    self.isScanningDuplicates = false
+                    self.scanStatus = ""
+                }
+            }
+        }
+        
+        // Strumieniowe hashowanie (Zero wycieków RAMu na dużych wideo)
+        private func hashFile(url: URL) -> String? {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+            defer { try? handle.close() }
+            
+            var hasher = SHA256()
+            // Czytamy w paczkach po 4MB
+            while let chunk = try? handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+            return hasher.finalize().compactMap { String(format: "%02x", $0) }.joined()
+        }
+        
+        // Usuwanie duplikatu prosto z widoku kart
+        func trashDuplicate(_ url: URL, from groupIndex: Int) {
+            var trashedURL: NSURL?
+            if (try? FileManager.default.trashItem(at: url, resultingItemURL: &trashedURL)) != nil, let trashed = trashedURL as URL? {
+                history.append(FileAction(description: "Usunięto duplikat", items: [(url, trashed)], isDeletion: true))
+                
+                // Aktualizujemy grupę duplikatów
+                if duplicateGroups.indices.contains(groupIndex) {
+                    duplicateGroups[groupIndex].removeAll { $0 == url }
+                    // Jeśli został 1 plik, to już nie jest duplikat - wywalamy całą grupę z listy
+                    if duplicateGroups[groupIndex].count <= 1 {
+                        duplicateGroups.remove(at: groupIndex)
+                    }
+                }
+                loadFiles() // Odświeżamy zwykłą listę w tle
+            }
+        }
+    
+        // Usuwa wszystkie pliki z danej grupy duplikatów
+        func trashDuplicateGroup(_ groupIndex: Int) {
+            guard duplicateGroups.indices.contains(groupIndex) else { return }
+            let urls = duplicateGroups[groupIndex]
+            var deletedItems: [(URL, URL)] = []
+            
+            for url in urls {
+                var trashedURL: NSURL?
+                if (try? FileManager.default.trashItem(at: url, resultingItemURL: &trashedURL)) != nil, let trashed = trashedURL as URL? {
+                    deletedItems.append((url, trashed))
+                }
+            }
+            
+            if !deletedItems.isEmpty {
+                history.append(FileAction(description: "Usunięto grupę duplikatów (\(deletedItems.count))", items: deletedItems, isDeletion: true))
+                duplicateGroups.remove(at: groupIndex)
+                loadFiles() // Odświeżamy główną listę plików w tle
+            }
+        }
 }
