@@ -25,9 +25,16 @@ Zamiast ręcznie przeklikiwać się przez Findera, wybierasz folder bazowy, zmap
 * **Frameworki:** `QuickLookThumbnailing`, `AVKit`, `UniformTypeIdentifiers`
 
 ## 🚀 Instalacja i uruchomienie
-1. Pobierz plik [`SortFlow.app.zip`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.0) z zakładki Release.
-2. Wypakuj pobrany plik .zip
-3. Uruchom aplikację SortFlow.app
+1. Pobierz plik [`SortFlow.dmg`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.0) z zakładki Release.
+2. Zamontuj (kliknij dwukrotnie) plik SortFlow.dmg.
+3. Przenieś plik SortFlow.app do folderu Aplikacje.
+4. Uruchom aplikację SortFlow.app.
+5. Wejdź w `Ustawienia systemowe`, przejdź do zakładki `Prywatność i ochrona` i naciśnij `Otwórz mimo to` przy komunikacie o zablokowaniu aplikacji.
+
+   <img width="535" height="104" alt="image" src="https://github.com/user-attachments/assets/41434964-562b-4e85-8672-c4e23984f8c8" />
+
+6. Od teraz aplikacja działa prawidłowo!
+
 
 ---
 
@@ -66,9 +73,12 @@ Instead of manually clicking through Finder, choose a base folder, map your targ
 * **Frameworks:** `QuickLookThumbnailing`, `AVKit`, `UniformTypeIdentifiers`
 
 ## 🚀 Installation & Setup
-1. Download the [`SortFlow.app.zip`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.0) file from the Releases tab.
-2. Extract the downloaded .zip file.
-3. Run the SortFlow.app application.
+1. Download the [`SortFlow.dmg`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.0) file from the Releases tab.
+2. Mount (double-click) the SortFlow.dmg file.
+3. Move the SortFlow.app file to the Applications folder.
+4. Launch the SortFlow.app application.
+5. Go to `System Settings`, navigate to the `Privacy & Security` tab, and click `Open Anyway` next to the message about the blocked application.
+6. From now on, the application will work correctly!
 
 ---
 
