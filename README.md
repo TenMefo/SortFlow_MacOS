@@ -1,4 +1,4 @@
-# SortFlow 
+# 🇵🇱 SortFlow 
 
 [🇺🇸 English version below](#-english-version)
 
@@ -50,7 +50,7 @@ Zamiast ręcznie przeklikiwać się przez Findera, wybierasz folder bazowy, zmap
 
 ---
 
-# 🇺🇸 English Version
+# 🇺🇸 SortFlow
 
 A macOS tool for file organization, decluttering drives, and removing duplicates. Built natively in SwiftUI.
 
