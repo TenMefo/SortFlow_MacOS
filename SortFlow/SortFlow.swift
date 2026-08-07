@@ -8,7 +8,7 @@
 import SwiftUI
 
 @main
-struct SwipeCleaner_MacOSApp: App {
+struct SortFlow: App {
     var body: some Scene {
         WindowGroup {
             ContentView()

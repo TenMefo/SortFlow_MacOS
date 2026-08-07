@@ -22,8 +22,13 @@ extension Color {
 
 extension URL {
     var isVideo: Bool {
+        let ext = self.pathExtension.lowercased()
+        
+        if ["mp4", "mov", "mkv", "avi", "m4v"].contains(ext) { return true}
+        if ["jpg", "jpeg", "png", "heic", "gif", "webp", "tiff", "raw"].contains(ext) { return false}
+        
         let uti = try? self.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
-        return uti?.contains("movie") == true || uti?.contains("video") == true || ["mp4", "mov", "mkv", "avi"].contains(self.pathExtension.lowercased())
+        return uti?.contains("movie") == true || uti?.contains("video") == true
     }
 }
 
@@ -591,13 +596,16 @@ struct AsyncThumbnail: View {
                 ProgressView().scaleEffect(0.5)
             }
         }
+        .onDisappear{
+            image = nil
+        }
         .task(id: url) {
             image = nil
             do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
             
             if !url.isVideo {
                 let directImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
-                    if let data = try? Data(contentsOf: url), let img = NSImage(data: data) {
+                    if let data = try? Data(contentsOf: url, options: .mappedIfSafe), let img = NSImage(data: data) {
                         return img
                     }
                     return NSImage(contentsOf: url) // Fallback
