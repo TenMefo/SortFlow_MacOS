@@ -41,6 +41,12 @@ struct MappedFolder: Identifiable, Codable, Equatable {
     var colorHex: String
 }
 
+struct Workspace: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var name: String
+    var folders: [MappedFolder]
+}
+
 class FolderManager: ObservableObject {
     @Published var currentFolder: URL?
     @Published var files: [URL] = []
@@ -52,6 +58,8 @@ class FolderManager: ObservableObject {
     
     @Published var selectedFiles: Set<URL> = []
     @Published var targetFolders: [MappedFolder] = []
+    @Published var workspaces: [Workspace] = []
+    @Published var activeWorkspaceId: UUID?
     @Published var history: [FileAction] = []
     
     
@@ -257,15 +265,73 @@ class FolderManager: ObservableObject {
         saveTargets()
     }
     
-    private func saveTargets() {
-        if let encoded = try? JSONEncoder().encode(targetFolders) { UserDefaults.standard.set(encoded, forKey: "mappedFolders") }
-    }
+//    private func saveTargets() {
+//        if let encoded = try? JSONEncoder().encode(targetFolders) { UserDefaults.standard.set(encoded, forKey: "mappedFolders") }
+//    }
+//    
+//    private func loadTargets() {
+//        if let data = UserDefaults.standard.data(forKey: "mappedFolders"), let decoded = try? JSONDecoder().decode([MappedFolder].self, from: data) {
+//            targetFolders = decoded
+//        }
+//    }
     
-    private func loadTargets() {
-        if let data = UserDefaults.standard.data(forKey: "mappedFolders"), let decoded = try? JSONDecoder().decode([MappedFolder].self, from: data) {
-            targetFolders = decoded
+    private func saveTargets() {
+        if let id = activeWorkspaceId, let index = workspaces.firstIndex(where: { $0.id == id }) {
+            workspaces[index].folders = targetFolders
+            if let encoded = try? JSONEncoder().encode(workspaces) { UserDefaults.standard.set(encoded, forKey: "savedWorkspaces") }
+            UserDefaults.standard.set(id.uuidString, forKey: "activeWorkspaceId")
         }
     }
+        
+    private func loadTargets() {
+        // Wczytywanie profili
+        if let data = UserDefaults.standard.data(forKey: "savedWorkspaces"),
+            let decoded = try? JSONDecoder().decode([Workspace].self, from: data) {
+            workspaces = decoded
+        } else {
+            // Bezpieczna migracja starej wersji aplikacji (utrzymuje to co zmapowałeś do tej pory)
+                var initialFolders: [MappedFolder] = []
+                if let oldData = UserDefaults.standard.data(forKey: "mappedFolders"),
+                   let decodedOld = try? JSONDecoder().decode([MappedFolder].self, from: oldData) {
+                    initialFolders = decodedOld
+                }
+                workspaces = [Workspace(name: "Domyślny", folders: initialFolders)]
+            }
+            
+            // Ustawianie aktywnego profilu
+            if let savedIdString = UserDefaults.standard.string(forKey: "activeWorkspaceId"),
+               let savedId = UUID(uuidString: savedIdString),
+               let activeWs = workspaces.first(where: { $0.id == savedId }) {
+                activeWorkspaceId = savedId
+                targetFolders = activeWs.folders
+            } else if let first = workspaces.first {
+                activeWorkspaceId = first.id
+                targetFolders = first.folders
+            }
+        }
+        
+        func createWorkspace(name: String) {
+            let newWs = Workspace(name: name, folders: [])
+            workspaces.append(newWs)
+            switchWorkspace(id: newWs.id)
+        }
+        
+        func switchWorkspace(id: UUID) {
+            guard let ws = workspaces.first(where: { $0.id == id }) else { return }
+            activeWorkspaceId = id
+            targetFolders = ws.folders
+            saveTargets() // zapisujemy, żeby zapamiętać, który był ostatnio aktywny
+        }
+        
+        func deleteWorkspace(id: UUID) {
+            guard workspaces.count > 1 else { return } // Nie pozwalamy usunąć jedynego profilu
+            workspaces.removeAll { $0.id == id }
+            if activeWorkspaceId == id {
+                switchWorkspace(id: workspaces[0].id)
+            } else {
+                saveTargets()
+            }
+        }
     
     func isVideo(url: URL) -> Bool {
         let uti = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier

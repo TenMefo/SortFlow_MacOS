@@ -89,6 +89,8 @@ struct ContentView: View {
     
     @State private var currentMode: AppMode = .browsing
     @State private var selectedDuplicateGroupIndex: Int?
+    @State private var showNewWorkspaceDialog = false
+    @State private var newWorkspaceName = ""
     
     // Helper do łatwego tłumaczenia w widoku
     private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
@@ -372,7 +374,40 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }.padding(.top)
                         
-                        Text(t("Przenieś do:", "Move to:")).font(.headline)
+                        HStack {
+                            Text(t("Przenieś do:", "Move to:")).font(.headline)
+                            Spacer()
+                                                    
+                            Menu {
+                                ForEach(manager.workspaces) { ws in
+                                    Button(action: { manager.switchWorkspace(id: ws.id) }) {
+                                        Text(ws.name)
+                                        if ws.id == manager.activeWorkspaceId { Image(systemName: "checkmark") }
+                                    }
+                                }
+                                Divider()
+                                                        
+                                Button(action: { showNewWorkspaceDialog = true }) {
+                                    Text(t("Nowy profil...", "New profile..."))
+                                    Image(systemName: "plus")
+                                }
+                                                        
+                                if manager.workspaces.count > 1, let activeId = manager.activeWorkspaceId {
+                                    Button(role: .destructive, action: { manager.deleteWorkspace(id: activeId) }) {
+                                        Text(t("Usuń ten profil", "Delete this profile"))
+                                        Image(systemName: "trash")
+                                    }
+                                }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(manager.workspaces.first(where: { $0.id == manager.activeWorkspaceId })?.name ?? "")
+                                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                                }
+                                .foregroundColor(.accentColor)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
                         List {
                             ForEach(manager.targetFolders) { folder in
                                 let isAvailable = (try? folder.url.checkResourceIsReachable()) ?? false
@@ -481,7 +516,18 @@ struct ContentView: View {
                         }.padding(.bottom)
                     }
                     .padding(.horizontal).frame(width: 260).background(Color(NSColor.controlBackgroundColor))
-                    
+                    .alert(t("Nowy profil", "New profile"), isPresented: $showNewWorkspaceDialog) {
+                        TextField(t("Nazwa", "Name"), text: $newWorkspaceName)
+                        Button("OK") {
+                            if !newWorkspaceName.isEmpty {
+                                manager.createWorkspace(name: newWorkspaceName)
+                                newWorkspaceName = ""
+                            }
+                        }
+                        Button(t("Anuluj", "Cancel"), role: .cancel) {
+                            newWorkspaceName = ""
+                        }
+                    }
                 }
                 else {
                     // ==========================================
@@ -654,6 +700,7 @@ struct DuplicateDetailCard: View {
             .tint(.red)
         }
         .padding(.horizontal)
+        
     }
     
     private func formatSize(_ bytes: Int64) -> String {
