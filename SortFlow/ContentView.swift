@@ -91,6 +91,7 @@ struct ContentView: View {
     @State private var selectedDuplicateGroupIndex: Int?
     @State private var showNewWorkspaceDialog = false
     @State private var newWorkspaceName = ""
+    @State private var isSettingsExpanded = false
     
     // Helper do łatwego tłumaczenia w widoku
     private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
@@ -124,93 +125,77 @@ struct ContentView: View {
             // LEWA KOLUMNA: Nawigacja i listy
             // ==========================================
             VStack(spacing: 0) {
-                // Przełącznik języka na samej górze
-                Picker(t("Język", "Language"), selection: $appLanguage) {
-                    ForEach(AppLanguage.allCases) { lang in
-                        Text(lang.rawValue).tag(lang)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal)
-                .padding(.top, 12)
-                .padding(.bottom, 8)
-                
-                VStack(spacing: 8) {
-                    Button(action: {
-                        manager.selectFolderToBrowse()
-                        currentMode = .browsing
-                    }) {
-                        Text(t("Wybierz folder bazowy", "Select base folder"))
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    
-                    if currentMode == .browsing {
+                VStack(spacing: 12) {
+                    VStack(spacing: 8){
                         Button(action: {
-                            currentMode = .duplicates
-                            selectedDuplicateGroupIndex = nil
-                            manager.findDuplicates()
-                        }) {
-                            HStack {
-                                Image(systemName: "doc.on.doc")
-                                Text(t("Znajdź duplikaty", "Find duplicates"))
-                            }
-                            .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .disabled(manager.currentFolder == nil || manager.isScanningDuplicates)
-                    } else {
-                        Button(action: {
+                            manager.selectFolderToBrowse()
                             currentMode = .browsing
                         }) {
-                            HStack {
-                                Image(systemName: "arrow.left")
-                                Text(t("Wróć do przeglądania", "Back to browsing"))
-                            }
-                            .frame(maxWidth: .infinity)
+                            Text(t("Wybierz folder bazowy", "Select base folder"))
+                                .frame(maxWidth: .infinity, minHeight: 28)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
+                        
+                        if currentMode == .browsing {
+                            Button(action: {
+                                currentMode = .duplicates
+                                selectedDuplicateGroupIndex = nil
+                                manager.findDuplicates()
+                            }) {
+                                HStack {
+                                    Image(systemName: "doc.on.doc")
+                                    Text(t("Znajdź duplikaty", "Find duplicates"))
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(manager.currentFolder == nil || manager.isScanningDuplicates)
+                        } else {
+                            Button(action: {
+                                currentMode = .browsing
+                            }) {
+                                HStack {
+                                    Image(systemName: "arrow.left")
+                                    Text(t("Wróć do przeglądania", "Back to browsing"))
+                                }
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
-                }
-                .padding(.horizontal)
-                .padding(.bottom)
-                
-                Divider()
-                
-                if currentMode == .browsing {
-                    // --- TRYB: PRZEGLĄDANIE ---
-                    VStack(spacing: 8) {
-                        
-                        /*
-                         TextField(t("Szukaj...", "Search..."), text: $manager.searchText)
-                         .textFieldStyle(.roundedBorder)
-                         
-                         HStack {
-                         Picker("Filtr", selection: $manager.filterType) { ForEach(FilterType.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden()
-                         Picker("Sort", selection: $manager.sortType) { ForEach(SortType.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden()
-                         }
-                         */
-                        
-                        VStack(alignment: .leading, spacing: 10) {
-                            Picker(t("Sortowanie:", "Sort by:"), selection: $manager.sortType) {
+                    
+                    if currentMode == .browsing {
+                        HStack {
+                            Text(t("Sortowanie:", "Sort by:"))
+                            Spacer()
+                            Picker("", selection: $manager.sortType) {
                                 Text(t("Alfabetycznie A-Z", "Alphabetically A-Z")).tag(SortType.nameAZ)
                                 Text(t("Alfabetycznie Z-A", "Alphabetically Z-A")).tag(SortType.nameZA)
                                 Text(t("Rozmiar (Malejąco)", "Size (Descending)")).tag(SortType.sizeDesc)
                                 Text(t("Rozmiar (Rosnąco)", "Size (Ascending)")).tag(SortType.sizeAsc)
                                 Text(t("Według typu", "By type")).tag(SortType.type)
                             }
-                            .pickerStyle(.menu)
-                                                    
-                            HStack {
-                                Toggle(t("Podfoldery", "Subfolders"), isOn: $manager.isRecursive)
-                                Spacer()
-                                Toggle(t("Miniatury", "Thumbnails"), isOn: $showListThumbnails)
-                            }
+                            .labelsHidden()
+                            .frame(width: 155)
+                        }
+                        .font(.caption)
+                        
+                        HStack {
+                            Toggle(t("Podfoldery", "Subfolders"), isOn: $manager.isRecursive)
+                            Spacer()
+                            Toggle(t("Miniatury", "Thumbnails"), isOn: $showListThumbnails)
                         }
                         .font(.caption)
                     }
-                    .padding(.horizontal).padding(.vertical, 8)
-                    
+                }
+                .padding(.horizontal)
+                .padding(.top, 16)
+                .padding(.bottom, 8)
+                .background(Color(NSColor.windowBackgroundColor))
+                .zIndex(1)
+                .shadow(color: Color.black.opacity(0.08), radius: 4, x: 0, y: 3)
+                
+                if currentMode == .browsing {
                     List(selection: $manager.selectedFiles) {
                         ForEach(manager.displayFiles, id: \.self) { file in
                             HStack {
@@ -356,24 +341,58 @@ struct ContentView: View {
                     // PRAWA KOLUMNA: Opcje i mapowanie
                     // ==========================================
                     VStack(spacing: 12) {
-                        GroupBox(t("Ustawienia", "Settings")) {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Picker(t("Styl", "Style"), selection: $previewMode) {
-                                    ForEach(PreviewMode.allCases) { Text($0.localized(appLanguage)).tag($0) }
-                                }.labelsHidden()
-                                
-                                Text(t("Opcje stylu dotyczą tylko zdjęć", "Style options apply to photos only"))
-                                    .font(.caption)
-                                    .foregroundColor(.gray)
-                                    .padding(.bottom, 4)
-                                
-                                Toggle(t("Auto-wideo", "Auto-video"), isOn: $videoAutoplay)
-                                Toggle(t("Dźwięk wideo", "Video sound"), isOn: $videoSound).disabled(!videoAutoplay)
-                                Toggle(t("Odtwarzaj zapętlone", "Play in loop"), isOn: $videoLoop).disabled(!videoAutoplay)
+                        // ===== ROZWIJANE MENU USTAWIEŃ
+                        GroupBox {
+                            DisclosureGroup(isExpanded: $isSettingsExpanded) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                                
+                                // 1. Język
+                                HStack {
+                                    Text(t("Język:", "Language:"))
+                                    Spacer()
+                                    Picker("", selection: $appLanguage){
+                                    ForEach(AppLanguage.allCases) { lang in Text(lang.rawValue).tag(lang)}
+                                    }
+                                    .pickerStyle(.segmented)
+                                    .frame(width: 100)
+                                }
+                                Divider()
+                                                            
+                                // 2. Styl podglądu (Opis nad pickerem)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(t("Opcje stylu dotyczą tylko zdjęć", "Style options apply to photos only"))
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.gray)
+                                                                
+                                    Picker("", selection: $previewMode) {
+                                        ForEach(PreviewMode.allCases) { Text($0.localized(appLanguage)).tag($0) }
+                                    }
+                                    .labelsHidden()
+                                    .frame(maxWidth: .infinity)
+                                }
+                                                            
+                                Divider()
+                                                            
+                                // 3. Przełączniki wideo (Styl suwaków / switch)
+                                VStack(spacing: 8) {
+                                    Toggle(t("Auto-wideo", "Auto-video"), isOn: $videoAutoplay)
+                                        .toggleStyle(.switch)
+                                    Toggle(t("Dźwięk wideo", "Video sound"), isOn: $videoSound)
+                                        .toggleStyle(.switch).disabled(!videoAutoplay)
+                                    Toggle(t("Odtwarzaj zapętlone", "Play in loop"), isOn: $videoLoop)
+                                        .toggleStyle(.switch).disabled(!videoAutoplay)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, 8)
+                            } label: {
+                                Text(t("Ustawienia","Settings")).font(.headline)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }.padding(.top)
+                        }
+                        .padding(.top)
+                        .padding(.bottom, 16)
                         
+                        // ===== PROFILE I FOLDERY DOCELOWE
                         HStack {
                             Text(t("Przenieś do:", "Move to:")).font(.headline)
                             Spacer()
@@ -408,6 +427,8 @@ struct ContentView: View {
                             .menuStyle(.borderlessButton)
                             .fixedSize()
                         }
+                        
+                        // ===== LISTA FOLDERÓW
                         List {
                             ForEach(manager.targetFolders) { folder in
                                 let isAvailable = (try? folder.url.checkResourceIsReachable()) ?? false
@@ -474,16 +495,25 @@ struct ContentView: View {
                             }
                             .onMove { i, o in manager.moveTargetFolders(from: i, to: o) }
                         }
-                        Button(t("Zmapuj nowe foldery...", "Map new folders...")) { manager.addTargetFolders() }
+                        // ===== DOLNE PRZYCISKI
+                        Button(action: {manager.addTargetFolders() }) {
+                            Text(t("Zmapuj nowe foldery...", "Map new folders..."))
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(.accentColor)
+                        .padding(.vertical, 4)
                         
-                        VStack(spacing: 8) {
+                        HStack(spacing: 8) {
                             Button(action: { manager.deleteSelectedFiles() }) {
                                 HStack {
                                     Image(systemName: "trash.fill")
-                                    Text(manager.selectedFiles.count > 1 ? t("Usuń (\(manager.selectedFiles.count))", "Delete (\(manager.selectedFiles.count))") : t("Przenieś do kosza", "Move to trash"))
+                                    Text(manager.selectedFiles.count > 1 ? t("Usuń (\(manager.selectedFiles.count))", "Delete (\(manager.selectedFiles.count))") : t("Do kosza", "To trash"))
                                 }
-                                .frame(maxWidth: .infinity).padding(.vertical, 8)
-                            }.buttonStyle(.borderedProminent).tint(.red).disabled(manager.selectedFiles.isEmpty)
+                                .frame(maxWidth: .infinity, minHeight: 24)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .tint(.red)
+                            .disabled(manager.selectedFiles.isEmpty)
                             
                             Menu {
                                 if manager.history.isEmpty {
@@ -509,11 +539,13 @@ struct ContentView: View {
                                     Image(systemName: "arrow.uturn.backward")
                                     Text(t("Cofnij...", "Undo..."))
                                 }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, minHeight: 24)
                             }
-                            .menuStyle(.borderlessButton).buttonStyle(.bordered).disabled(manager.history.isEmpty)
-                        }.padding(.bottom)
+                            .menuStyle(.borderlessButton)
+                            .buttonStyle(.bordered)
+                            .disabled(manager.history.isEmpty)
+                        }
+                        .padding(.bottom)
                     }
                     .padding(.horizontal).frame(width: 260).background(Color(NSColor.controlBackgroundColor))
                     .alert(t("Nowy profil", "New profile"), isPresented: $showNewWorkspaceDialog) {
@@ -843,11 +875,13 @@ struct FilePreview: View {
                 if url.isVideo {
                     AutoVideoPlayer(url: url, autoplay: autoplay, sound: sound, loop: loop)
                         .frame(width: geo.size.width, height: geo.size.height)
+                        .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
                 } else {
                     if let img = loadedImage {
                         if isFitted {
                             Image(nsImage: img).resizable().scaledToFit()
                                 .frame(width: geo.size.width, height: geo.size.height)
+                                .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
                         } else {
                             if previewMode == .fitWithBlur {
                                 ZStack {
@@ -866,6 +900,7 @@ struct FilePreview: View {
                             } else {
                                 Image(nsImage: img).resizable().scaledToFit()
                                     .frame(width: geo.size.width, height: geo.size.height)
+                                    .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
                             }
                         }
                     } else {
@@ -925,7 +960,7 @@ struct MetadataOverlay: View {
             .font(.caption).fontWeight(.medium).foregroundColor(.white)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background(Capsule().fill(Color.black.opacity(0.6)))
-            .padding(.bottom, 70)
+            .padding(.bottom, 24)
             .task(id: url) {
                 // OPÓŹNIENIE ZWIĘKSZONE DO 0.25s:
                 // Pozwala podglądowi załadować się pierwszemu bez rywalizacji o dysk
