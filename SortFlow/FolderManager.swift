@@ -334,15 +334,23 @@ class FolderManager: ObservableObject {
             }
         }
         
-        // Strumieniowe hashowanie (Zero wycieków RAMu na dużych wideo)
+        // Strumieniowe hashowanie (Prawdziwe zero wycieków RAM-u na gigantycznych plikach)
         private func hashFile(url: URL) -> String? {
             guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
             defer { try? handle.close() }
-            
+        
             var hasher = SHA256()
-            // Czytamy w paczkach po 4MB
-            while let chunk = try? handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
-                hasher.update(data: chunk)
+        
+            while true {
+                // Blok autoreleasepool gwarantuje, że RAM nigdy nie spuchnie powyżej 4MB
+                let isEndOfFile = autoreleasepool {
+                    guard let chunk = try? handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty else {
+                        return true
+                    }
+                    hasher.update(data: chunk)
+                    return false
+                }
+                if isEndOfFile { break }
             }
             return hasher.finalize().compactMap { String(format: "%02x", $0) }.joined()
         }
