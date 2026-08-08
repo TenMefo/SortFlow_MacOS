@@ -18,10 +18,14 @@ enum FilterType: String, CaseIterable {
     case raw = "RAW"
 }
 
-enum SortType: String, CaseIterable {
-    case name = "Nazwa"
-    case size = "Rozmiar"
-    case date = "Data"
+//enum SortType: String, CaseIterable {
+//    case name = "Nazwa"
+//    case size = "Rozmiar"
+//    case date = "Data"
+//}
+
+enum SortType: CaseIterable {
+    case nameAZ, nameZA, sizeDesc, sizeAsc, type
 }
 
 struct FileAction: Identifiable {
@@ -44,7 +48,7 @@ class FolderManager: ObservableObject {
     @Published var isRecursive = false { didSet { loadFiles() } }
     @Published var searchText = ""
     @Published var filterType: FilterType = .all
-    @Published var sortType: SortType = .name
+    @Published var sortType: SortType = .nameAZ
     
     @Published var selectedFiles: Set<URL> = []
     @Published var targetFolders: [MappedFolder] = []
@@ -74,9 +78,24 @@ class FolderManager: ObservableObject {
         
         result.sort { u1, u2 in
             switch sortType {
-            case .name: return u1.lastPathComponent.lowercased() < u2.lastPathComponent.lowercased()
-            case .size: return (getFileSize(url: u1) ?? 0) > (getFileSize(url: u2) ?? 0)
-            case .date: return (getCreationDate(url: u1) ?? Date.distantPast) > (getCreationDate(url: u2) ?? Date.distantPast)
+            case .nameAZ:
+                return u1.lastPathComponent.localizedStandardCompare(u2.lastPathComponent) == .orderedAscending
+            case .nameZA:
+                return u1.lastPathComponent.localizedStandardCompare(u2.lastPathComponent) == .orderedDescending
+            case .sizeDesc:
+                return (getFileSize(url: u1) ?? 0) > (getFileSize(url: u2) ?? 0)
+            case .sizeAsc:
+                return (getFileSize(url: u1) ?? 0) < (getFileSize(url: u2) ?? 0)
+            case .type:
+                // Najpierw zdjęcia (0), potem wideo (1), reszta (2)
+                let u1Rank = isImage(url: u1) ? 0 : (isVideo(url: u1) ? 1 : 2)
+                let u2Rank = isImage(url: u2) ? 0 : (isVideo(url: u2) ? 1 : 2)
+                        
+                if u1Rank != u2Rank {
+                    return u1Rank < u2Rank
+                }
+                // Jeśli ten sam typ, sortujemy alfabetycznie A-Z
+                return u1.lastPathComponent.localizedStandardCompare(u2.lastPathComponent) == .orderedAscending
             }
         }
         return result

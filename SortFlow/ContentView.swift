@@ -179,7 +179,6 @@ struct ContentView: View {
                     // --- TRYB: PRZEGLĄDANIE ---
                     VStack(spacing: 8) {
                         
-                        // Wyłączone zgodnie z prośbą, ale nie usunięte z kodu:
                         /*
                          TextField(t("Szukaj...", "Search..."), text: $manager.searchText)
                          .textFieldStyle(.roundedBorder)
@@ -190,11 +189,21 @@ struct ContentView: View {
                          }
                          */
                         
-                        HStack {
-                            // "Płaski widok" zamienione na "Uwzględnij podfoldery"
-                            Toggle(t("Uwzględnij podfoldery", "Include subfolders"), isOn: $manager.isRecursive)
-                            Spacer()
-                            Toggle(t("Miniatury", "Thumbnails"), isOn: $showListThumbnails)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Picker(t("Sortowanie:", "Sort by:"), selection: $manager.sortType) {
+                                Text(t("Alfabetycznie A-Z", "Alphabetically A-Z")).tag(SortType.nameAZ)
+                                Text(t("Alfabetycznie Z-A", "Alphabetically Z-A")).tag(SortType.nameZA)
+                                Text(t("Rozmiar (Malejąco)", "Size (Descending)")).tag(SortType.sizeDesc)
+                                Text(t("Rozmiar (Rosnąco)", "Size (Ascending)")).tag(SortType.sizeAsc)
+                                Text(t("Według typu", "By type")).tag(SortType.type)
+                            }
+                            .pickerStyle(.menu)
+                                                    
+                            HStack {
+                                Toggle(t("Podfoldery", "Subfolders"), isOn: $manager.isRecursive)
+                                Spacer()
+                                Toggle(t("Miniatury", "Thumbnails"), isOn: $showListThumbnails)
+                            }
                         }
                         .font(.caption)
                     }
