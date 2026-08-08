@@ -83,6 +83,7 @@ struct ContentView: View {
     @AppStorage("previewMode") private var previewMode: PreviewMode = .aspectFit
     @AppStorage("videoAutoplay") private var videoAutoplay = true
     @AppStorage("videoSound") private var videoSound = false
+    @AppStorage("videoLoop") private var videoLoop = true
     @AppStorage("showListThumbnails") private var showListThumbnails = true
     @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
     
@@ -330,13 +331,13 @@ struct ContentView: View {
                                     .font(.title).fontWeight(.bold)
                             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else if let selected = manager.selectedFiles.first {
-                            FilePreview(url: selected, previewMode: previewMode, autoplay: videoAutoplay, sound: videoSound, isFitted: false)
+                            FilePreview(url: selected, previewMode: previewMode, autoplay: videoAutoplay, sound: videoSound, loop: videoLoop, isFitted: false)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .padding()
                                 .onDrag { NSItemProvider(object: selected as NSURL) }
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity) // <-- POPRAWKA: Zabezpieczenie szerokości na całym środkowym bloku
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     
                     Divider()
                     
@@ -357,22 +358,42 @@ struct ContentView: View {
                                 
                                 Toggle(t("Auto-wideo", "Auto-video"), isOn: $videoAutoplay)
                                 Toggle(t("Dźwięk wideo", "Video sound"), isOn: $videoSound).disabled(!videoAutoplay)
+                                Toggle(t("Odtwarzaj zapętlone", "Play in loop"), isOn: $videoLoop).disabled(!videoAutoplay)
                             }
-                            .frame(maxWidth: .infinity, alignment: .leading) // Wyrównanie do lewej
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }.padding(.top)
                         
                         Text(t("Przenieś do:", "Move to:")).font(.headline)
                         List {
                             ForEach(manager.targetFolders) { folder in
+                                let isAvailable = (try? folder.url.checkResourceIsReachable()) ?? false
+                                let isExternal = folder.url.path.hasPrefix("/Volumes/")
+                                
                                 HStack {
                                     Button(action: { manager.moveSelectedFiles(to: folder.url) }) {
                                         HStack {
-                                            Image(systemName: "folder.fill").foregroundColor(Color(hex: folder.colorHex))
-                                            Text(folder.url.lastPathComponent).fontWeight(.medium)
+                                            if isAvailable{
+                                                Image(systemName: "folder.fill").foregroundColor(Color(hex: folder.colorHex))
+                                                Text(folder.url.lastPathComponent).fontWeight(.medium)
+                                            } else {
+                                                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.red)
+                                                VStack(alignment: .leading, spacing: 2) {
+                                                    Text(folder.url.lastPathComponent)
+                                                        .fontWeight(.medium)
+                                                        .strikethrough()
+                                                        .foregroundColor(.gray)
+                                                    
+                                                    Text(isExternal ? t("Odłączono dysk", "Drive disconnected") : t("Folder przeniesiony/usunięty", "Folder moved/deleted"))
+                                                        .font(.system(size: 9))
+                                                        .foregroundColor(.red)
+                                                }
+                                            }
                                         }
                                         .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
                                     }
-                                    .buttonStyle(.plain).disabled(manager.selectedFiles.isEmpty)
+                                    .buttonStyle(.plain)
+                                    .disabled(manager.selectedFiles.isEmpty || !isAvailable)
+                                    .help(isAvailable ? folder.url.path : t("Brak dostępu do ścieżki:\n\(folder.url.path)", "No access to path:\n\(folder.url.path)"))
                                     
                                     Menu {
                                         // Opcja 1: Kolory (zagnieżdżone)
@@ -380,7 +401,7 @@ struct ContentView: View {
                                             ForEach(predefinedColors, id: \.hex) { color in
                                                 Button(appLanguage == .pl ? color.namePL : color.nameEN) { manager.updateFolderColor(id: folder.id, newHex: color.hex) }
                                             }
-                                        }
+                                        }.disabled(!isAvailable)
                                         
                                         // Opcja 2: Usuń tylko przypisanie folderu
                                         Button(role: .destructive, action: { manager.removeMappedFolder(id: folder.id) }) {
@@ -390,13 +411,15 @@ struct ContentView: View {
                                         // Opcja 3: Otwórz w systemowym finderze
                                         Button(action: { NSWorkspace.shared.activateFileViewerSelecting([folder.url]) }) {
                                             Text(t("Otwórz w Finder", "Open in Finder"))
-                                        }
+                                        }.disabled(!isAvailable)
                                         
                                     } label: { Image(systemName: "ellipsis.circle").foregroundColor(.gray) }
                                         .menuStyle(.borderlessButton).frame(width: 30)
                                         .menuIndicator(.hidden)
                                 }
                                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                                    guard isAvailable else { return false }
+                                        
                                     for provider in providers {
                                         _ = provider.loadObject(ofClass: URL.self) { url, _ in
                                             if let fileURL = url { DispatchQueue.main.async { manager.moveFile(fileURL, to: folder.url) } }
@@ -753,6 +776,7 @@ struct FilePreview: View {
     let previewMode: PreviewMode
     let autoplay: Bool
     let sound: Bool
+    var loop: Bool = false
     var isFitted: Bool = false
 
     @State private var loadedImage: NSImage?
@@ -761,7 +785,7 @@ struct FilePreview: View {
         GeometryReader { geo in
             ZStack {
                 if url.isVideo {
-                    AutoVideoPlayer(url: url, autoplay: autoplay, sound: sound)
+                    AutoVideoPlayer(url: url, autoplay: autoplay, sound: sound, loop: loop)
                         .frame(width: geo.size.width, height: geo.size.height)
                 } else {
                     if let img = loadedImage {
@@ -901,6 +925,7 @@ struct AutoVideoPlayer: View {
     let url: URL
     let autoplay: Bool
     let sound: Bool
+    var loop: Bool = false
     
     @State private var player: AVPlayer?
     @State private var ratio: CGFloat = 16/9
@@ -959,6 +984,12 @@ struct AutoVideoPlayer: View {
             player?.pause()
             player?.replaceCurrentItem(with: nil)
             player = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
+            if loop, let item = notification.object as? AVPlayerItem, item == player?.currentItem {
+                player?.seek(to: .zero)
+                player?.play()
+            }
         }
     }
 }
