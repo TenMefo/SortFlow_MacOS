@@ -6,7 +6,8 @@ Narzędzie na macOS do segregacji plików, odgracania dysków i usuwania duplika
 
 Zamiast ręcznie przeklikiwać się przez Findera, wybierasz folder bazowy, zmapujesz swoje foldery docelowe (np. "Do obróbki", "Śmieci", "Prywatne") i segregujesz pliki jednym kliknięciem. 
 
-<img width="2880" height="1698" alt="image" src="https://github.com/user-attachments/assets/4b07a557-aba7-44aa-b2e2-d2d282151652" />
+<img width="3024" height="1898" alt="image" src="https://github.com/user-attachments/assets/f0c9ddc7-5643-4369-87ff-6d47270254cb" />
+
 
 ## Główne funkcje
 
@@ -25,7 +26,7 @@ Zamiast ręcznie przeklikiwać się przez Findera, wybierasz folder bazowy, zmap
 * **Frameworki:** `QuickLookThumbnailing`, `AVKit`, `UniformTypeIdentifiers`
 
 ## 🚀 Instalacja i uruchomienie
-1. Pobierz plik [`SortFlow.dmg`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.0) z zakładki Release.
+1. Pobierz plik [`SortFlow.dmg`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.1) z zakładki Release.
 2. Zamontuj (kliknij dwukrotnie) plik SortFlow.dmg.
 3. Przenieś plik SortFlow.app do folderu Aplikacje.
 4. Uruchom aplikację SortFlow.app.
@@ -73,7 +74,7 @@ Instead of manually clicking through Finder, choose a base folder, map your targ
 * **Frameworks:** `QuickLookThumbnailing`, `AVKit`, `UniformTypeIdentifiers`
 
 ## 🚀 Installation & Setup
-1. Download the [`SortFlow.dmg`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.0) file from the Releases tab.
+1. Download the [`SortFlow.dmg`](https://github.com/TenMefo/SortFlow_MacOS/releases/tag/v1.1) file from the Releases tab.
 2. Mount (double-click) the SortFlow.dmg file.
 3. Move the SortFlow.app file to the Applications folder.
 4. Launch the SortFlow.app application.
