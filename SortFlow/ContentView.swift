@@ -91,6 +91,29 @@ struct ContentView: View {
     
     // Helper do łatwego tłumaczenia w widoku
     private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
+    private func getDriveIcon(for url: URL) -> String {
+        // 1. Cloud
+        if let isUbiquitous = try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem, isUbiquitous {
+            return "icloud.fill"
+        }
+        let lowerPath = url.path.lowercased()
+        if lowerPath.contains("google drive") || lowerPath.contains("onedrive") || lowerPath.contains("dropbox") || lowerPath.contains("cloud") {
+            return "cloud.fill"
+        }
+        
+        // 2. Dysk wewn. vs zewn.
+        // isInternal nie działą na karty SD
+        if let res = try? url.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey]) {
+            if res.volumeIsEjectable == true || res.volumeIsRemovable == true {
+                return "externaldrive.fill"
+            }
+            if res.volumeIsInternal == true {
+                return "applelogo"
+            }
+        }
+        // 3. Fallback
+        return "folder.fill"
+    }
     
     var body: some View {
         NavigationSplitView {
@@ -157,14 +180,14 @@ struct ContentView: View {
                         
                         // Wyłączone zgodnie z prośbą, ale nie usunięte z kodu:
                         /*
-                        TextField(t("Szukaj...", "Search..."), text: $manager.searchText)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        HStack {
-                            Picker("Filtr", selection: $manager.filterType) { ForEach(FilterType.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden()
-                            Picker("Sort", selection: $manager.sortType) { ForEach(SortType.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden()
-                        }
-                        */
+                         TextField(t("Szukaj...", "Search..."), text: $manager.searchText)
+                         .textFieldStyle(.roundedBorder)
+                         
+                         HStack {
+                         Picker("Filtr", selection: $manager.filterType) { ForEach(FilterType.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden()
+                         Picker("Sort", selection: $manager.sortType) { ForEach(SortType.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.labelsHidden()
+                         }
+                         */
                         
                         HStack {
                             // "Płaski widok" zamienione na "Uwzględnij podfoldery"
@@ -197,6 +220,13 @@ struct ContentView: View {
                                     }
                                 }
                             }.tag(file)
+                                .contextMenu{
+                                    Button(action: {NSWorkspace.shared.activateFileViewerSelecting([file.absoluteURL])})
+                                    {
+                                        Text(t("Pokaż w Finder", "Show in Finder"))
+                                        Image(systemName: "magnifyingglass")
+                                    }
+                                }
                         }
                     }
                 } else {
@@ -243,7 +273,54 @@ struct ContentView: View {
                     // ==========================================
                     VStack(spacing: 0) {
                         if let folder = manager.currentFolder {
-                            Text(folder.lastPathComponent).font(.title2).fontWeight(.semibold).padding(.vertical, 10)
+                            HStack(spacing: 8) {
+                                Menu {
+                                    let path = folder.path
+                                    let shortenedPath = path.count > 45 ? String(path.prefix(45)) + "..." : path
+                                    Text(shortenedPath)
+                                    
+                                    Divider()
+                                    
+                                    Button(action: {NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)}){
+                                        Text(t("Otwórz w Finder", "Open in Finder"))
+                                        Image(systemName: "finder") // Zostawiłem Twoją ikonkę "finder"
+                                    }
+                                    Button(action: {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(folder.path, forType: .string)
+                                    }){
+                                        Text(t("Skopiuj ścieżkę", "Copy path"))
+                                        Image(systemName: "doc.on.clipboard")
+                                    }
+                                } label: {
+                                    Color.clear
+                                        .frame(width: 32, height: 32)
+                                        .overlay(
+                                            Image(systemName: getDriveIcon(for: folder))
+                                                .font(.title2)
+                                        )
+                                        .contentShape(Rectangle())
+                                    
+                                }
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
+                                
+                                
+                                Text("|").foregroundColor(.gray).font(.title3)
+                                
+                                Text(folder.lastPathComponent)
+                                    .font(.title2)
+                                    .fontWeight(.semibold)
+                                
+                                Text("|").foregroundColor(.gray).font(.title3)
+                                
+                                Text("\(manager.displayFiles.count) \(t("plików", "files"))")
+                                    .font(.title3)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 10)
+                            .zIndex(1)
                         }
                         
                         if manager.selectedFiles.count > 1 {
@@ -259,7 +336,7 @@ struct ContentView: View {
                                 .onDrag { NSItemProvider(object: selected as NSURL) }
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity) // <-- POPRAWKA: Zabezpieczenie szerokości na całym środkowym bloku
                     
                     Divider()
                     
@@ -316,8 +393,8 @@ struct ContentView: View {
                                         }
                                         
                                     } label: { Image(systemName: "ellipsis.circle").foregroundColor(.gray) }
-                                    .menuStyle(.borderlessButton).frame(width: 30)
-                                    .menuIndicator(.hidden)
+                                        .menuStyle(.borderlessButton).frame(width: 30)
+                                        .menuIndicator(.hidden)
                                 }
                                 .onDrop(of: [.fileURL], isTargeted: nil) { providers in
                                     for provider in providers {
@@ -345,21 +422,21 @@ struct ContentView: View {
                                 if manager.history.isEmpty {
                                     Text(t("Brak operacji do cofnięcia", "No operations to undo"))
                                 } else {
-                                        ForEach(manager.history.suffix(5).reversed()) { action in
-                                            Button(action: { manager.undoAction(id: action.id) }) {
+                                    ForEach(manager.history.suffix(5).reversed()) { action in
+                                        Button(action: { manager.undoAction(id: action.id) }) {
+                                            
+                                            // Dla jednego pliku wyświetlamy jego nazwę
+                                            if action.items.count == 1, let singleItem = action.items.first {
                                                 
-                                                // Dla jednego pliku wyświetlamy jego nazwę
-                                                if action.items.count == 1, let singleItem = action.items.first {
-                                                    
-                                                    Text(t("Cofnij: \(singleItem.original.lastPathComponent)", "Undo: \(singleItem.original.lastPathComponent)"))
-                                                    
-                                                } else {
-                                                    // Dla wielu plików wyświetlamy opis
-                                                    Text(action.description)
-                                                }
+                                                Text(t("Cofnij: \(singleItem.original.lastPathComponent)", "Undo: \(singleItem.original.lastPathComponent)"))
+                                                
+                                            } else {
+                                                // Dla wielu plików wyświetlamy opis
+                                                Text(action.description)
                                             }
                                         }
                                     }
+                                }
                             } label: {
                                 HStack {
                                     Image(systemName: "arrow.uturn.backward")
@@ -373,7 +450,8 @@ struct ContentView: View {
                     }
                     .padding(.horizontal).frame(width: 260).background(Color(NSColor.controlBackgroundColor))
                     
-                } else {
+                }
+                else {
                     // ==========================================
                     // TRYB: PORÓWNANIE DUPLIKATÓW
                     // ==========================================
@@ -398,6 +476,7 @@ struct ContentView: View {
         }
     }
 }
+
 
 // MARK: - Moduł Porównywania Duplikatów
 
@@ -511,6 +590,9 @@ struct DuplicateDetailCard: View {
     
     @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
     private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
+    
+    
+    
     
     var body: some View {
         VStack(spacing: 12) {
@@ -879,4 +961,8 @@ struct AutoVideoPlayer: View {
             player = nil
         }
     }
+}
+
+#Preview {
+    ContentView()
 }
