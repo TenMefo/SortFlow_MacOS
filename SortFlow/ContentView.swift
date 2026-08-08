@@ -345,12 +345,28 @@ struct ContentView: View {
                                 if manager.history.isEmpty {
                                     Text(t("Brak operacji do cofnięcia", "No operations to undo"))
                                 } else {
-                                    ForEach(manager.history.suffix(5).reversed()) { action in
-                                        Button(action.description) { manager.undoAction(id: action.id) }
+                                        ForEach(manager.history.suffix(5).reversed()) { action in
+                                            Button(action: { manager.undoAction(id: action.id) }) {
+                                                
+                                                // Dla jednego pliku wyświetlamy jego nazwę
+                                                if action.items.count == 1, let singleItem = action.items.first {
+                                                    
+                                                    Text(t("Cofnij: \(singleItem.original.lastPathComponent)", "Undo: \(singleItem.original.lastPathComponent)"))
+                                                    
+                                                } else {
+                                                    // Dla wielu plików wyświetlamy opis
+                                                    Text(action.description)
+                                                }
+                                            }
+                                        }
                                     }
-                                }
                             } label: {
-                                HStack { Image(systemName: "arrow.uturn.backward"); Text(t("Cofnij...", "Undo...")) }.frame(maxWidth: .infinity).padding(.vertical, 8)
+                                HStack {
+                                    Image(systemName: "arrow.uturn.backward")
+                                    Text(t("Cofnij...", "Undo..."))
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 8)
                             }
                             .menuStyle(.borderlessButton).buttonStyle(.bordered).disabled(manager.history.isEmpty)
                         }.padding(.bottom)
@@ -580,7 +596,7 @@ struct InfoRow: View {
 struct AsyncThumbnail: View {
     let url: URL
     let size: CGSize
-    var isIcon: Bool = false // Dla małych miniaturek
+    var isIcon: Bool = false
     
     @State private var image: NSImage?
     
@@ -596,36 +612,43 @@ struct AsyncThumbnail: View {
                 ProgressView().scaleEffect(0.5)
             }
         }
-        .onDisappear{
+        .onDisappear {
             image = nil
         }
         .task(id: url) {
             image = nil
-            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
             
             if !url.isVideo {
-                let directImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
-                    let maxPixelSize = isIcon ? 150 : 2048
+                do { try await Task.sleep(nanoseconds: 150_000_000) } catch { return }
+                
+                let directImage = await Task.detached(priority: .background) { () -> NSImage? in
+                    if Task.isCancelled { return nil }
                     
-                    let options: [CFString: Any] = [
+                    // @autoreleasepool zapobiega wyciekom pamięci IOSurface
+                    return autoreleasepool {
+                        let maxPixelSize = isIcon ? 150 : 2048
+                        let options: [CFString: Any] = [
                             kCGImageSourceCreateThumbnailFromImageAlways: true,
                             kCGImageSourceCreateThumbnailWithTransform: true,
-                            kCGImageSourceShouldCacheImmediately: true,
                             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
                         ]
-                    
-                    if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                           let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                            return NSImage(cgImage: cgImage, size: .zero)
+                        
+                        if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
+                            if Task.isCancelled { return nil }
+                            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                                return NSImage(cgImage: cgImage, size: .zero)
+                            }
                         }
                         
-                        return NSImage(contentsOf: url) // Awaryjny fallback
-                    }.value
+                        // awaryjne wczytanie systemowej ikonki
+                        return NSWorkspace.shared.icon(forFile: url.path)
+                    }
+                }.value
                 
                 if let valid = directImage, !Task.isCancelled {
                     await MainActor.run { self.image = valid }
-                    return
                 }
+                return
             }
             
             let scale = NSScreen.main?.backingScaleFactor ?? 2.0
@@ -666,12 +689,10 @@ struct FilePreview: View {
                         } else {
                             if previewMode == .fitWithBlur {
                                 ZStack {
-                                    // Tło - Blur
                                     Image(nsImage: img).resizable().scaledToFill()
                                         .frame(width: geo.size.width, height: geo.size.height)
                                         .blur(radius: 40).clipped()
                                     
-                                    // Pierwszy plan
                                     Image(nsImage: img).resizable().scaledToFit()
                                         .frame(width: geo.size.width, height: geo.size.height)
                                         .shadow(color: .black.opacity(0.6), radius: 15, x: 0, y: 5)
@@ -704,25 +725,30 @@ struct FilePreview: View {
             
             loadedImage = nil
             
-            // Ładujemy NATYCHMIAST (bez Task.sleep) tylko raz
-            let image = await Task.detached(priority: .userInitiated) { () -> NSImage? in
-                let options: [CFString: Any] = [
-                    kCGImageSourceCreateThumbnailFromImageAlways: true,
-                    kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceShouldCacheImmediately: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 2048 // Skalowanie w locie dla optymalizacji
-                ]
+            do { try await Task.sleep(nanoseconds: 50_000_000) } catch { return }
+            
+            let fetchedImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
+                if Task.isCancelled { return nil }
                 
-                if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                   let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                    return NSImage(cgImage: cgImage, size: .zero)
+                // Ponownie czyścimy VRAM po zrenderowaniu dużego podglądu
+                return autoreleasepool {
+                    let options: [CFString: Any] = [
+                        kCGImageSourceCreateThumbnailFromImageAlways: true,
+                        kCGImageSourceCreateThumbnailWithTransform: true,
+                        kCGImageSourceThumbnailMaxPixelSize: 2048
+                    ]
+                    
+                    if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                       let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+                        return NSImage(cgImage: cgImage, size: .zero)
+                    }
+                    
+                    return NSWorkspace.shared.icon(forFile: url.path)
                 }
-                
-                return NSImage(contentsOf: url) // Fallback
             }.value
             
-            if !Task.isCancelled {
-                await MainActor.run { self.loadedImage = image }
+            if let validImage = fetchedImage, !Task.isCancelled {
+                await MainActor.run { self.loadedImage = validImage }
             }
         }
     }
@@ -739,9 +765,14 @@ struct MetadataOverlay: View {
             .background(Capsule().fill(Color.black.opacity(0.6)))
             .padding(.bottom, 70)
             .task(id: url) {
-                do { try await Task.sleep(nanoseconds: 50_000_000) } catch { return }
+                // OPÓŹNIENIE ZWIĘKSZONE DO 0.25s:
+                // Pozwala podglądowi załadować się pierwszemu bez rywalizacji o dysk
+                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
                 
-                let detailsStr = await Task.detached(priority: .userInitiated) {
+                // ZMIANA PRIORYTETU NA .utility
+                let detailsStr = await Task.detached(priority: .utility) {
+                    if Task.isCancelled { return "" }
+                    
                     var details: [String] = []
                     if let attr = try? FileManager.default.attributesOfItem(atPath: url.path),
                        let size = attr[.size] as? Int64 { details.append(String(format: "%.1f MB", Double(size) / 1048576)) }
@@ -759,7 +790,9 @@ struct MetadataOverlay: View {
                     return details.joined(separator: " • ")
                 }.value
                 
-                if !Task.isCancelled { await MainActor.run { self.info = detailsStr } }
+                if !Task.isCancelled, !detailsStr.isEmpty {
+                    await MainActor.run { self.info = detailsStr }
+                }
             }
     }
 }
