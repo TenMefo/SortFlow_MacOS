@@ -2,6 +2,7 @@ import SwiftUI
 import AVKit
 import QuickLookThumbnailing
 import UniformTypeIdentifiers
+import Quartz
 
 // MARK: - Rozszerzenia (Extensions)
 
@@ -30,6 +31,13 @@ extension URL {
         let uti = try? self.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
         return uti?.contains("movie") == true || uti?.contains("video") == true
     }
+    
+    var isDocument: Bool {
+        let ext = self.pathExtension.lowercased()
+        if ["txt", "md", "rtf", "rtfd", "doc", "docx", "pdf", "csv", "pages", "json", "xml", "html"].contains(ext) { return true }
+        let uti = try? self.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
+        return uti?.contains("text") == true || uti?.contains("pdf") == true || uti?.contains("document") == true
+    }
 }
 
 // MARK: - Typy (Enums) i Modele
@@ -51,6 +59,19 @@ enum PreviewMode: String, CaseIterable, Identifiable {
         case .aspectFit: return lang == .pl ? "Dopasuj do okna" : "Fit to window"
         case .aspectFill: return lang == .pl ? "Wypełnij" : "Fill"
         case .fitWithBlur: return lang == .pl ? "Całe zdjęcie + Blur" : "Full image + Blur"
+        }
+    }
+}
+
+enum DocumentPreviewMode: String, CaseIterable, Identifiable {
+    case fullWidth = "fullWidth"
+    case padded = "padded"
+    var id: Self { self }
+    
+    func localized(_ lang: AppLanguage) -> String {
+        switch self {
+        case .fullWidth: return lang == .pl ? "Pełna szerokość" : "Full width"
+        case .padded: return lang == .pl ? "Z marginesami" : "With margins"
         }
     }
 }
@@ -86,7 +107,8 @@ struct ContentView: View {
     @AppStorage("videoLoop") private var videoLoop = true
     @AppStorage("showListThumbnails") private var showListThumbnails = true
     @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
-    
+    @AppStorage("docPreviewMode") private var docPreviewMode: DocumentPreviewMode = .padded
+
     @State private var currentMode: AppMode = .browsing
     @State private var selectedDuplicateGroupIndex: Int?
     @State private var showNewWorkspaceDialog = false
@@ -327,7 +349,7 @@ struct ContentView: View {
                                     .font(.title).fontWeight(.bold)
                             }.frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else if let selected = manager.selectedFiles.first {
-                            FilePreview(url: selected, previewMode: previewMode, autoplay: videoAutoplay, sound: videoSound, loop: videoLoop, isFitted: false)
+                            FilePreview(url: selected, previewMode: previewMode, autoplay: videoAutoplay, sound: videoSound, loop: videoLoop, isFitted: false, docPreviewMode: docPreviewMode)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .padding()
                                 .onDrag { NSItemProvider(object: selected as NSURL) }
@@ -375,22 +397,41 @@ struct ContentView: View {
                                                             
                                 // 3. Przełączniki wideo (Styl suwaków / switch)
                                 VStack(spacing: 8) {
+                                    Text(t("Poniższe opcje dotyczą tylko plików wideo", "The following options apply only to video files"))
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.gray)
+                                                                
                                     Toggle(t("Auto-wideo", "Auto-video"), isOn: $videoAutoplay)
                                         .toggleStyle(.switch)
                                     Toggle(t("Dźwięk wideo", "Video sound"), isOn: $videoSound)
                                         .toggleStyle(.switch).disabled(!videoAutoplay)
                                     Toggle(t("Odtwarzaj zapętlone", "Play in loop"), isOn: $videoLoop)
                                         .toggleStyle(.switch).disabled(!videoAutoplay)
-                                    }
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.top, 8)
-                            } label: {
-                                Text(t("Ustawienia","Settings")).font(.headline)
+                                
+                                Divider()
+                                
+                                // 4. Przełączniki dla tekstów
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(t("Styl dla dokumentów i tekstu", "Style for documents and text"))
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.gray)
+                                                                        
+                                    Picker("", selection: $docPreviewMode) {
+                                        ForEach(DocumentPreviewMode.allCases) { Text($0.localized(appLanguage)).tag($0) }
+                                    }
+                                    .labelsHidden()
+                                    .frame(maxWidth: .infinity)
+                                }
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                        } label: {
+                            Text(t("Ustawienia","Settings")).font(.headline)
                         }
-                        .padding(.top)
-                        .padding(.bottom, 16)
+                    }
+                    .padding(.top)
+                    .padding(.bottom, 16)
                         
                         // ===== PROFILE I FOLDERY DOCELOWE
                         HStack {
@@ -560,6 +601,10 @@ struct ContentView: View {
                             newWorkspaceName = ""
                         }
                     }
+                    // Do konlfiktów
+                    .sheet(item: $manager.activeConflict) { conflict in
+                        ConflictResolutionView(conflict: conflict, manager: manager)
+                    }
                 }
                 else {
                     // ==========================================
@@ -700,9 +745,6 @@ struct DuplicateDetailCard: View {
     
     @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
     private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
-    
-    
-    
     
     var body: some View {
         VStack(spacing: 12) {
@@ -866,7 +908,8 @@ struct FilePreview: View {
     let sound: Bool
     var loop: Bool = false
     var isFitted: Bool = false
-
+    var docPreviewMode: DocumentPreviewMode = .padded
+    
     @State private var loadedImage: NSImage?
     
     var body: some View {
@@ -876,6 +919,18 @@ struct FilePreview: View {
                     AutoVideoPlayer(url: url, autoplay: autoplay, sound: sound, loop: loop)
                         .frame(width: geo.size.width, height: geo.size.height)
                         .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
+                } else if url.isDocument {
+                    if docPreviewMode == .padded {
+                        DocumentPreview(url: url)
+                            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
+                            .padding(.horizontal, 150)
+                            .padding(.vertical, 40)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                    } else {
+                        DocumentPreview(url: url)
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
+                    }
                 } else {
                     if let img = loadedImage {
                         if isFitted {
@@ -918,7 +973,7 @@ struct FilePreview: View {
             loadedImage = nil
         }
         .task(id: url) {
-            if url.isVideo { return }
+            if url.isVideo || url.isDocument { return }
             
             loadedImage = nil
             
@@ -1081,6 +1136,126 @@ struct AutoVideoPlayer: View {
                 player?.seek(to: .zero)
                 player?.play()
             }
+        }
+    }
+}
+
+// MARK: - Moduł Rozwiązywania Konfliktów
+
+struct ConflictResolutionView: View {
+    let conflict: FileConflict
+    @ObservedObject var manager: FolderManager
+    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
+
+    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
+
+    @State private var sourceMeta: FileMetadataModel?
+    @State private var destMeta: FileMetadataModel?
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text(t("Konflikt plików", "File Conflict"))
+                .font(.title2).bold()
+
+            Text(t("Plik o nazwie \"\(conflict.source.lastPathComponent)\" już istnieje w folderze docelowym.", "A file named \"\(conflict.source.lastPathComponent)\" already exists in the destination."))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
+
+            HStack(spacing: 20) {
+                VStack(alignment: .leading) {
+                    Text(t("Przenoszony plik:", "Moving file:")).font(.headline)
+                    if let meta = sourceMeta {
+                        MetaCard(meta: meta)
+                    } else {
+                        ProgressView()
+                    }
+                }
+
+                VStack(alignment: .leading) {
+                    Text(t("Plik docelowy:", "Destination file:")).font(.headline)
+                    if let meta = destMeta {
+                        MetaCard(meta: meta)
+                    } else {
+                        ProgressView()
+                    }
+                }
+            }
+
+            HStack(spacing: 16) {
+                Button(t("Zastąp", "Replace")) { manager.resolveConflict(action: .replace) }
+                    .buttonStyle(.borderedProminent).tint(.red)
+                Button(t("Zachowaj oba", "Keep both")) { manager.resolveConflict(action: .keepBoth) }
+                    .buttonStyle(.borderedProminent).tint(.blue)
+                Button(t("Pomiń", "Skip")) { manager.resolveConflict(action: .skip) }
+                    .buttonStyle(.bordered)
+            }
+            .padding(.top, 8)
+        }
+        .padding(24)
+        .frame(width: 500)
+        .onAppear {
+            sourceMeta = getMeta(url: conflict.source)
+            destMeta = getMeta(url: conflict.destination)
+        }
+    }
+
+    private func getMeta(url: URL) -> FileMetadataModel {
+        let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let res = try? url.resourceValues(forKeys: [.creationDateKey])
+        return FileMetadataModel(
+            url: url,
+            name: url.lastPathComponent,
+            path: url.path,
+            size: (attr?[.size] as? Int64) ?? 0,
+            creationDate: res?.creationDate,
+            modDate: attr?[.modificationDate] as? Date
+        )
+    }
+}
+
+struct MetaCard: View {
+    let meta: FileMetadataModel
+    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
+    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(t("Rozmiar:", "Size:")) \(formatSize(meta.size))")
+            Text("\(t("Utworzono:", "Created:")) \(formatDate(meta.creationDate))")
+            Text("\(t("Zmieniono:", "Modified:")) \(formatDate(meta.modDate))")
+        }
+        .font(.system(size: 12))
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(NSColor.controlBackgroundColor))
+        .cornerRadius(8)
+    }
+
+    private func formatSize(_ bytes: Int64) -> String {
+        String(format: "%.2f MB", Double(bytes) / 1048576)
+    }
+
+    private func formatDate(_ date: Date?) -> String {
+        guard let date = date else { return t("Brak", "N/A") }
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .short
+        return df.string(from: date)
+    }
+}
+
+struct DocumentPreview: NSViewRepresentable {
+    let url: URL
+    
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView()
+        view.autostarts = true
+        return view
+    }
+    
+    func updateNSView(_ nsView: QLPreviewView, context: Context) {
+        if nsView.previewItem as? URL != url {
+            nsView.previewItem = url as QLPreviewItem
         }
     }
 }

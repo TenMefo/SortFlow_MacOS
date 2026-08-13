@@ -18,11 +18,6 @@ enum FilterType: String, CaseIterable {
     case raw = "RAW"
 }
 
-//enum SortType: String, CaseIterable {
-//    case name = "Nazwa"
-//    case size = "Rozmiar"
-//    case date = "Data"
-//}
 
 enum SortType: CaseIterable {
     case nameAZ, nameZA, sizeDesc, sizeAsc, type
@@ -47,6 +42,16 @@ struct Workspace: Identifiable, Codable, Equatable {
     var folders: [MappedFolder]
 }
 
+struct FileConflict: Identifiable {
+    let id = UUID()
+    let source: URL
+    let destination: URL
+}
+
+enum ConflictResolution {
+    case replace, keepBoth, skip
+}
+
 class FolderManager: ObservableObject {
     @Published var currentFolder: URL?
     @Published var files: [URL] = []
@@ -62,11 +67,15 @@ class FolderManager: ObservableObject {
     @Published var activeWorkspaceId: UUID?
     @Published var history: [FileAction] = []
     
-    
-    // Nowe zmienne dla duplikatów
     @Published var isScanningDuplicates = false
     @Published var scanStatus = ""
     @Published var duplicateGroups: [[URL]] = []
+    
+    // Nowe zmienne dla konfliktów
+    @Published var activeConflict: FileConflict?
+    private var conflictQueue: [FileConflict] = []
+    private var successfulMoves: [(URL, URL)] = []
+    private var isMovingBatch: Bool = false
     
     var displayFiles: [URL] {
         var result = files
@@ -149,27 +158,92 @@ class FolderManager: ObservableObject {
     
     func moveSelectedFiles(to target: URL) {
         guard !selectedFiles.isEmpty else { return }
-        var movedItems: [(URL, URL)] = []
-        
+        successfulMoves = []
+        conflictQueue = []
+        isMovingBatch = true
+            
         for file in selectedFiles {
             let destination = target.appendingPathComponent(file.lastPathComponent)
-            if (try? FileManager.default.moveItem(at: file, to: destination)) != nil {
-                movedItems.append((file, destination))
+            if FileManager.default.fileExists(atPath: destination.path) {
+                conflictQueue.append(FileConflict(source: file, destination: destination))
+            } else {
+                if (try? FileManager.default.moveItem(at: file, to: destination)) != nil {
+                    successfulMoves.append((file, destination))
+                }
             }
         }
-        if !movedItems.isEmpty {
-            history.append(FileAction(description: "Przeniesiono \(movedItems.count) plik(ów)", items: movedItems, isDeletion: false))
-            advanceSelection(removing: Set(movedItems.map { $0.0 }))
-        }
+        processNextConflictOrFinish()
     }
-    
+        
     func moveFile(_ url: URL, to target: URL) {
         let destination = target.appendingPathComponent(url.lastPathComponent)
-        if (try? FileManager.default.moveItem(at: url, to: destination)) != nil {
-            history.append(FileAction(description: "Przeniesiono 1 plik", items: [(url, destination)], isDeletion: false))
-            advanceSelection(removing: [url])
+        successfulMoves = []
+        conflictQueue = []
+        isMovingBatch = false
+            
+        if FileManager.default.fileExists(atPath: destination.path) {
+            conflictQueue.append(FileConflict(source: url, destination: destination))
+            processNextConflictOrFinish()
+        } else {
+            if (try? FileManager.default.moveItem(at: url, to: destination)) != nil {
+                history.append(FileAction(description: "Przeniesiono 1 plik", items: [(url, destination)], isDeletion: false))
+                advanceSelection(removing: [url])
+            }
         }
     }
+        
+    // ===== KONFLIKTY
+    
+    func resolveConflict(action: ConflictResolution) {
+        guard let conflict = activeConflict else { return }
+        conflictQueue.removeFirst()
+            
+        switch action {
+        case .replace:
+            if (try? FileManager.default.removeItem(at: conflict.destination)) != nil {
+                if (try? FileManager.default.moveItem(at: conflict.source, to: conflict.destination)) != nil {
+                    successfulMoves.append((conflict.source, conflict.destination))
+                }
+            }
+        case .keepBoth:
+            let newDest = generateUniqueURL(for: conflict.destination)
+            if (try? FileManager.default.moveItem(at: conflict.source, to: newDest)) != nil {
+                successfulMoves.append((conflict.source, newDest))
+            }
+        case .skip:
+            break
+        }
+        processNextConflictOrFinish()
+    }
+        
+    private func processNextConflictOrFinish() {
+        if let next = conflictQueue.first {
+            activeConflict = next
+        } else {
+            activeConflict = nil
+            if !successfulMoves.isEmpty {
+                let desc = isMovingBatch ? "Przeniesiono \(successfulMoves.count) plik(ów)" : "Przeniesiono 1 plik"
+                history.append(FileAction(description: desc, items: successfulMoves, isDeletion: false))
+                advanceSelection(removing: Set(successfulMoves.map { $0.0 }))
+            }
+            successfulMoves = []
+        }
+    }
+        
+    private func generateUniqueURL(for url: URL) -> URL {
+        let dir = url.deletingLastPathComponent()
+        let ext = url.pathExtension
+        let name = url.deletingPathExtension().lastPathComponent
+        var counter = 1
+        var newURL = url
+        while FileManager.default.fileExists(atPath: newURL.path) {
+            let newName = "\(name) \(counter)"
+            newURL = ext.isEmpty ? dir.appendingPathComponent(newName) : dir.appendingPathComponent(newName).appendingPathExtension(ext)
+            counter += 1
+        }
+        return newURL
+    }
+    // ===============
     
     func deleteSelectedFiles() {
         guard !selectedFiles.isEmpty else { return }
