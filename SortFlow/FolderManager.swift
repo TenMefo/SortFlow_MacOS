@@ -1,535 +1,366 @@
-//
-//  FolderManager.swift
-//  SwipeCleaner_MacOS
-//
-//  Created by Mateusz Parciak on 19/07/2026.
-//
-
 import Foundation
 import AppKit
 import Combine
-import SwiftUI
-import CryptoKit
 
-enum FilterType: String, CaseIterable {
-    case all = "Wszystkie"
-    case video = "Wideo"
-    case image = "Zdjęcia"
-    case raw = "RAW"
-}
-
-
-enum SortType: CaseIterable {
-    case nameAZ, nameZA, sizeDesc, sizeAsc, type
-}
-
-struct FileAction: Identifiable {
-    let id = UUID()
-    let description: String
-    let items: [(original: URL, destination: URL)]
-    let isDeletion: Bool
-}
-
-struct MappedFolder: Identifiable, Codable, Equatable {
-    var id = UUID()
-    let url: URL
-    var colorHex: String
-}
-
-struct Workspace: Identifiable, Codable, Equatable {
-    var id = UUID()
-    var name: String
-    var folders: [MappedFolder]
-}
-
-struct FileConflict: Identifiable {
-    let id = UUID()
-    let source: URL
-    let destination: URL
-}
-
-enum ConflictResolution {
-    case replace, keepBoth, skip
-}
-
-class FolderManager: ObservableObject {
+@MainActor
+final class FolderManager: ObservableObject {
     @Published var currentFolder: URL?
-    @Published var files: [URL] = []
-    
-    @Published var isRecursive = false { didSet { loadFiles() } }
-    @Published var searchText = ""
-    @Published var filterType: FilterType = .all
-    @Published var sortType: SortType = .nameAZ
-    
-    @Published var selectedFiles: Set<URL> = []
-    @Published var targetFolders: [MappedFolder] = []
+    @Published private(set) var files: [FileEntry] = []
+    @Published private(set) var displayFiles: [FileEntry] = []
+    @Published var selectedFiles: Set<URL> = [] { didSet { persistSession() } }
+    @Published var searchText = "" { didSet { rebuild() } }
+    @Published var filter: FileKind = .all { didSet { rebuild(); persistSession() } }
+    @Published var sort: SortOrder = .nameAZ { didSet { rebuild(); persistSession() } }
+    @Published var recursive = false { didSet { if recursive != oldValue { persistSession(); loadFiles() } } }
+    @Published var minSizeMB: Double = 0 { didSet { rebuild() } }
+    @Published var maxSizeMB: Double = 0 { didSet { rebuild() } }
+    @Published var dateFilterEnabled = false { didSet { rebuild() } }
+    @Published var modifiedAfter = Calendar.current.date(byAdding: .month, value: -1, to: Date())! { didSet { rebuild() } }
+    @Published var deferredOnly = false { didSet { rebuild() } }
+    @Published var transferMode: TransferMode = .move { didSet { persistSession() } }
     @Published var workspaces: [Workspace] = []
-    @Published var activeWorkspaceId: UUID?
-    @Published var history: [FileAction] = []
-    
-    @Published var isScanningDuplicates = false
-    @Published var scanStatus = ""
-    @Published var duplicateGroups: [[URL]] = []
-    
-    // Nowe zmienne dla konfliktów
+    @Published var activeWorkspaceID: UUID?
+    @Published var targets: [MappedFolder] = []
+    @Published var rules: [Rule] = []
+    @Published var duplicateGroups: [DuplicateGroup] = []
+    @Published var selectedGroupID: String?
+    @Published var protectedCopies: [String: URL] = [:]
+    @Published var deferred: Set<URL> = []
+    @Published var history: [HistoryRecord] = []
+    @Published var stats = SessionStats()
+    @Published var isLoading = false
+    @Published var isScanning = false
+    @Published var isBusy = false
+    @Published var progress = ScanProgress()
+    @Published var operationDone = 0
+    @Published var operationTotal = 0
+    @Published var notice = ""
+    @Published var errors: [String] = []
     @Published var activeConflict: FileConflict?
-    private var conflictQueue: [FileConflict] = []
-    private var successfulMoves: [(URL, URL)] = []
-    private var isMovingBatch: Bool = false
-    
-    var displayFiles: [URL] {
-        var result = files
-        
-        if !searchText.isEmpty {
-            result = result.filter { $0.lastPathComponent.localizedCaseInsensitiveContains(searchText) }
+    @Published var applyToRemaining = false
+    @Published var preferredFolder: URL? { didSet { persistSession() } }
+    private var completed: Set<URL> = []
+    private var restoring = true
+    private var listFlag = CancellationFlag()
+    private var scanFlag = CancellationFlag()
+    private var operationFlag = CancellationFlag()
+    private var listGeneration = UUID(), scanGeneration = UUID()
+    private var conflictContinuation: CheckedContinuation<ConflictChoice, Never>?
+    private var cachedChoice: ConflictChoice?
+    private var historyLimit = 100
+    private var searchWork: Task<Void, Never>?
+    let support: URL
+    var backupRoot: URL { support.appendingPathComponent("Backups", isDirectory: true) }
+    var canAct: Bool { !isBusy && !isLoading && !isScanning }
+    var selectedEntry: FileEntry? { selectedFiles.count == 1 ? files.first { selectedFiles.contains($0.url) } : nil }
+    var activeWorkspaceName: String { workspaces.first { $0.id == activeWorkspaceID }?.name ?? "" }
+    var recoverable: Int64 { duplicateGroups.reduce(0) { $0 + $1.recoverable } }
+
+    init() {
+        support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SortFlow", isDirectory: true)
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: "savedWorkspaces"), let decoded = try? JSONDecoder().decode([Workspace].self, from: data), !decoded.isEmpty { workspaces = decoded }
+        else {
+            let folders = defaults.data(forKey: "mappedFolders").flatMap { try? JSONDecoder().decode([MappedFolder].self, from: $0) } ?? []
+            workspaces = [Workspace(name: tr("Domyślny", "Default"), folders: folders)]
         }
-        
-        result = result.filter { url in
-            switch filterType {
-            case .all: return true
-            case .video: return isVideo(url: url)
-            case .image: return isImage(url: url) && !isRAW(url: url)
-            case .raw: return isRAW(url: url)
-            }
-        }
-        
-        result.sort { u1, u2 in
-            switch sortType {
-            case .nameAZ:
-                return u1.lastPathComponent.localizedStandardCompare(u2.lastPathComponent) == .orderedAscending
-            case .nameZA:
-                return u1.lastPathComponent.localizedStandardCompare(u2.lastPathComponent) == .orderedDescending
-            case .sizeDesc:
-                return (getFileSize(url: u1) ?? 0) > (getFileSize(url: u2) ?? 0)
-            case .sizeAsc:
-                return (getFileSize(url: u1) ?? 0) < (getFileSize(url: u2) ?? 0)
-            case .type:
-                // Najpierw zdjęcia (0), potem wideo (1), reszta (2)
-                let u1Rank = isImage(url: u1) ? 0 : (isVideo(url: u1) ? 1 : 2)
-                let u2Rank = isImage(url: u2) ? 0 : (isVideo(url: u2) ? 1 : 2)
-                        
-                if u1Rank != u2Rank {
-                    return u1Rank < u2Rank
-                }
-                // Jeśli ten sam typ, sortujemy alfabetycznie A-Z
-                return u1.lastPathComponent.localizedStandardCompare(u2.lastPathComponent) == .orderedAscending
-            }
-        }
-        return result
+        if let data = defaults.data(forKey: "sortflowRules"), let decoded = try? JSONDecoder().decode([Rule].self, from: data) { rules = decoded }
+        loadHistory()
+        let id = defaults.string(forKey: "activeWorkspaceId").flatMap(UUID.init(uuidString:)) ?? workspaces[0].id
+        restoreWorkspace(workspaces.first { $0.id == id } ?? workspaces[0])
+        restoring = false
+        if currentFolder != nil { loadFiles() }
     }
-    
-    init() { loadTargets() }
-    
-    func selectFolderToBrowse() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        
-        if panel.runModal() == .OK {
-            currentFolder = panel.url
-            loadFiles()
-            history.removeAll()
-        }
+    func persistSession() {
+        guard !restoring, let index = workspaces.firstIndex(where: { $0.id == activeWorkspaceID }) else { return }
+        workspaces[index].folders = targets
+        workspaces[index].source = currentFolder
+        workspaces[index].selected = selectedFiles.first
+        workspaces[index].recursive = recursive
+        workspaces[index].filter = filter
+        workspaces[index].sort = sort
+        workspaces[index].transfer = transferMode
+        workspaces[index].deferred = Array(deferred)
+        workspaces[index].preferredFolder = preferredFolder
+        saveWorkspaces()
     }
-    
+    private func saveWorkspaces() {
+        if let data = try? JSONEncoder().encode(workspaces) { UserDefaults.standard.set(data, forKey: "savedWorkspaces") }
+        UserDefaults.standard.set(activeWorkspaceID?.uuidString, forKey: "activeWorkspaceId")
+    }
+    private func restoreWorkspace(_ workspace: Workspace) {
+        restoring = true
+        activeWorkspaceID = workspace.id; targets = workspace.folders; currentFolder = workspace.source
+        filter = workspace.filter ?? .all; sort = workspace.sort ?? .nameAZ; recursive = workspace.recursive ?? false
+        transferMode = workspace.transfer ?? .move; deferred = Set(workspace.deferred ?? [])
+        selectedFiles = workspace.selected.map { [$0] } ?? []; preferredFolder = workspace.preferredFolder
+        completed = []; searchText = ""; deferredOnly = false
+        restoring = false
+    }
+    func switchWorkspace(_ id: UUID) {
+        guard canAct, let workspace = workspaces.first(where: { $0.id == id }) else { return }
+        persistSession(); cancelScan(); restoreWorkspace(workspace); duplicateGroups = []; selectedGroupID = nil; loadFiles(); saveWorkspaces()
+    }
+    func createWorkspace(_ name: String) {
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        persistSession()
+        let workspace = Workspace(name: name, folders: [])
+        workspaces.append(workspace); restoreWorkspace(workspace); files = []; rebuild(); saveWorkspaces()
+    }
+    func deleteWorkspace() {
+        guard canAct, workspaces.count > 1 else { return }
+        workspaces.removeAll { $0.id == activeWorkspaceID }; restoreWorkspace(workspaces[0]); saveWorkspaces(); loadFiles()
+    }
+    func chooseFolder() {
+        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true
+        if panel.runModal() == .OK, let url = panel.url { openFolder(url) }
+    }
+    func openFolder(_ url: URL) {
+        guard canAct else { return }
+        var directory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue else { notice = tr("Upuść folder, aby go otworzyć", "Drop a folder to open it"); return }
+        cancelScan(); currentFolder = url.standardizedFileURL; selectedFiles = []; completed = []; deferred = []
+        duplicateGroups = []; selectedGroupID = nil; stats = SessionStats(); persistSession(); loadFiles()
+    }
     func loadFiles() {
-        guard let folder = currentFolder else { return }
-        DispatchQueue.global(qos: .userInitiated).async {
-            var fetchedURLs: [URL] = []
-            let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .creationDateKey]
-            let options: FileManager.DirectoryEnumerationOptions = self.isRecursive ? [.skipsHiddenFiles] : [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
-            
-            if let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys, options: options) {
-                for case let url as URL in enumerator {
-                    if let res = try? url.resourceValues(forKeys: Set(keys)), res.isDirectory == false {
-                        fetchedURLs.append(url)
+        guard !restoring else { return }
+        listFlag.cancel(); listFlag = CancellationFlag()
+        let flag = listFlag, generation = UUID(); listGeneration = generation
+        guard let folder = currentFolder else { files = []; rebuild(); return }
+        let recurse = recursive
+        isLoading = true
+        Task {
+            let result = await Task.detached(priority: .userInitiated) { Result { try ScanService.list(folder, recursive: recurse, flag: flag) } }.value
+            guard generation == listGeneration else { return }
+            isLoading = false
+            switch result {
+            case .success(let value):
+                files = value.0; rebuild(); selectedFiles.formIntersection(Set(files.map(\.url)))
+                if selectedFiles.isEmpty, let first = displayFiles.first { selectedFiles = [first.url] }
+                if !value.1.isEmpty { errors = value.1; notice = tr("Niektóre pliki pominięto — zobacz raport", "Some files were skipped — see report") }
+            case .failure(let error): if !(error is CancellationError) { errors = [error.localizedDescription]; notice = error.localizedDescription }
+            }
+        }
+    }
+    private func rebuild() {
+        guard !restoring else { return }
+        searchWork?.cancel()
+        // Dane są już w pamięci: filtrowanie nie wykonuje żadnych odczytów dysku.
+        let input = files, query = searchText, kind = filter, order = sort, deferredSet = deferred, completedSet = completed
+        let onlyDeferred = deferredOnly, minimum = minSizeMB, maximum = maxSizeMB, after = modifiedAfter, useDate = dateFilterEnabled
+        searchWork = Task {
+            if !query.isEmpty { try? await Task.sleep(nanoseconds: 120_000_000) }
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                input.filter { file in
+                    !completedSet.contains(file.url) && (onlyDeferred ? deferredSet.contains(file.url) : !deferredSet.contains(file.url)) &&
+                    (kind == .all || file.kind == kind) && (query.isEmpty || file.name.localizedCaseInsensitiveContains(query)) &&
+                    (minimum <= 0 || Double(file.size) >= minimum * 1_000_000) && (maximum <= 0 || Double(file.size) <= maximum * 1_000_000) &&
+                    (!useDate || file.modified >= after)
+                }.sorted { a, b in
+                    switch order {
+                    case .nameAZ: return a.name.localizedStandardCompare(b.name) == .orderedAscending
+                    case .nameZA: return a.name.localizedStandardCompare(b.name) == .orderedDescending
+                    case .sizeDesc: return a.size == b.size ? a.url.path < b.url.path : a.size > b.size
+                    case .sizeAsc: return a.size == b.size ? a.url.path < b.url.path : a.size < b.size
+                    case .newest: return a.modified == b.modified ? a.url.path < b.url.path : a.modified > b.modified
+                    case .oldest: return a.modified == b.modified ? a.url.path < b.url.path : a.modified < b.modified
+                    case .type: return a.kind == b.kind ? a.name.localizedStandardCompare(b.name) == .orderedAscending : a.kind.rawValue < b.kind.rawValue
                     }
                 }
-            }
-            
-            DispatchQueue.main.async {
-                self.files = fetchedURLs
-                let validSelection = self.selectedFiles.intersection(self.files)
-                self.selectedFiles = validSelection.isEmpty ? (self.displayFiles.first.map { [$0] } ?? []) : validSelection
-            }
+            }.value
+            guard !Task.isCancelled else { return }; displayFiles = result
         }
     }
-    
-    func moveSelectedFiles(to target: URL) {
-        guard !selectedFiles.isEmpty else { return }
-        successfulMoves = []
-        conflictQueue = []
-        isMovingBatch = true
-            
-        for file in selectedFiles {
-            let destination = target.appendingPathComponent(file.lastPathComponent)
-            if FileManager.default.fileExists(atPath: destination.path) {
-                conflictQueue.append(FileConflict(source: file, destination: destination))
-            } else {
-                if (try? FileManager.default.moveItem(at: file, to: destination)) != nil {
-                    successfulMoves.append((file, destination))
-                }
-            }
-        }
-        processNextConflictOrFinish()
+    func navigate(_ delta: Int) {
+        guard !displayFiles.isEmpty else { return }
+        let index = displayFiles.firstIndex { selectedFiles.contains($0.url) } ?? 0
+        selectedFiles = [displayFiles[min(max(index + delta, 0), displayFiles.count - 1)].url]
     }
-        
-    func moveFile(_ url: URL, to target: URL) {
-        let destination = target.appendingPathComponent(url.lastPathComponent)
-        successfulMoves = []
-        conflictQueue = []
-        isMovingBatch = false
-            
-        if FileManager.default.fileExists(atPath: destination.path) {
-            conflictQueue.append(FileConflict(source: url, destination: destination))
-            processNextConflictOrFinish()
-        } else {
-            if (try? FileManager.default.moveItem(at: url, to: destination)) != nil {
-                history.append(FileAction(description: "Przeniesiono 1 plik", items: [(url, destination)], isDeletion: false))
-                advanceSelection(removing: [url])
-            }
-        }
+    func deferSelected() {
+        guard canAct, !selectedFiles.isEmpty else { return }
+        let selection = selectedFiles
+        let next = nextSelection(removing: selection)
+        if deferredOnly { deferred.subtract(selection) } else { deferred.formUnion(selection) }
+        selectedFiles = next.map { [$0] } ?? []; persistSession(); rebuild()
+        notice = deferredOnly ? tr("Przywrócono do kolejki", "Returned to queue") : tr("Odłożono do decyzji później", "Saved for later")
     }
-        
-    // ===== KONFLIKTY
-    
-    func resolveConflict(action: ConflictResolution) {
-        guard let conflict = activeConflict else { return }
-        conflictQueue.removeFirst()
-            
-        switch action {
-        case .replace:
-            if (try? FileManager.default.removeItem(at: conflict.destination)) != nil {
-                if (try? FileManager.default.moveItem(at: conflict.source, to: conflict.destination)) != nil {
-                    successfulMoves.append((conflict.source, conflict.destination))
-                }
-            }
-        case .keepBoth:
-            let newDest = generateUniqueURL(for: conflict.destination)
-            if (try? FileManager.default.moveItem(at: conflict.source, to: newDest)) != nil {
-                successfulMoves.append((conflict.source, newDest))
-            }
-        case .skip:
-            break
-        }
-        processNextConflictOrFinish()
+    func showDeferred() { deferredOnly.toggle(); selectedFiles = []; rebuild() }
+    private func nextSelection(removing urls: Set<URL>) -> URL? {
+        guard let index = displayFiles.firstIndex(where: { urls.contains($0.url) }) else { return displayFiles.first?.url }
+        return displayFiles.dropFirst(index + 1).first { !urls.contains($0.url) }?.url ?? displayFiles.reversed().first { !urls.contains($0.url) }?.url
     }
-        
-    private func processNextConflictOrFinish() {
-        if let next = conflictQueue.first {
-            activeConflict = next
-        } else {
-            activeConflict = nil
-            if !successfulMoves.isEmpty {
-                let desc = isMovingBatch ? "Przeniesiono \(successfulMoves.count) plik(ów)" : "Przeniesiono 1 plik"
-                history.append(FileAction(description: desc, items: successfulMoves, isDeletion: false))
-                advanceSelection(removing: Set(successfulMoves.map { $0.0 }))
-            }
-            successfulMoves = []
-        }
-    }
-        
-    private func generateUniqueURL(for url: URL) -> URL {
-        let dir = url.deletingLastPathComponent()
-        let ext = url.pathExtension
-        let name = url.deletingPathExtension().lastPathComponent
-        var counter = 1
-        var newURL = url
-        while FileManager.default.fileExists(atPath: newURL.path) {
-            let newName = "\(name) \(counter)"
-            newURL = ext.isEmpty ? dir.appendingPathComponent(newName) : dir.appendingPathComponent(newName).appendingPathExtension(ext)
-            counter += 1
-        }
-        return newURL
-    }
-    // ===============
-    
-    func deleteSelectedFiles() {
-        guard !selectedFiles.isEmpty else { return }
-        var deletedItems: [(URL, URL)] = []
-        
-        for file in selectedFiles {
-            var trashedURL: NSURL?
-            if (try? FileManager.default.trashItem(at: file, resultingItemURL: &trashedURL)) != nil, let trashed = trashedURL as URL? {
-                deletedItems.append((file, trashed))
-            }
-        }
-        if !deletedItems.isEmpty {
-            history.append(FileAction(description: "Usunięto \(deletedItems.count) plik(ów)", items: deletedItems, isDeletion: true))
-            advanceSelection(removing: Set(deletedItems.map { $0.0 }))
-        }
-    }
-    
-    func undoAction(id: UUID) {
-        guard let index = history.firstIndex(where: { $0.id == id }) else { return }
-        let action = history.remove(at: index)
-        var restoredFiles: Set<URL> = []
-        
-        for item in action.items {
-            let currentPath = action.isDeletion ? item.destination : item.destination
-            if (try? FileManager.default.moveItem(at: currentPath, to: item.original)) != nil {
-                restoredFiles.insert(item.original)
-            }
-        }
-        loadFiles()
-        if !restoredFiles.isEmpty { selectedFiles = restoredFiles }
-    }
-    
-    // NAPRAWIONA LOGIKA ZAZNACZANIA KOLEJNEGO PLIKU
-    private func advanceSelection(removing removedURLs: Set<URL>) {
-        let currentDisplay = displayFiles
-        
-        // Szukamy indeksu ostatniego z plików, który właśnie usuwamy/przenosimy
-        var maxIndex = -1
-        for url in removedURLs {
-            if let idx = currentDisplay.firstIndex(of: url), idx > maxIndex {
-                maxIndex = idx
-            }
-        }
-        
-        // Zapisujemy, jaki plik jest tuż pod nim, ZANIM fizycznie wywalimy dane
-        var nextURLToSelect: URL? = nil
-        if maxIndex >= 0 && maxIndex + 1 < currentDisplay.count {
-            nextURLToSelect = currentDisplay[maxIndex + 1]
-        }
-        
-        // Właściwe usunięcie
-        files.removeAll { removedURLs.contains($0) }
-        
-        // Zaznaczamy plik, który zapisaliśmy wcześniej
-        let newDisplay = displayFiles
-        if newDisplay.isEmpty {
-            selectedFiles = []
-        } else if let next = nextURLToSelect, newDisplay.contains(next) {
-            selectedFiles = [next]
-        } else {
-            // Jeśli przenieśliśmy ostatni plik na liście, zaznaczamy nowy ostatni element
-            selectedFiles = [newDisplay.last!]
-        }
-    }
-    
-    func addTargetFolders() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = true
+    func addTargets() {
+        let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
-            for url in panel.urls {
-                if !targetFolders.contains(where: { $0.url == url }) { targetFolders.append(MappedFolder(url: url, colorHex: "#8A2BE2")) }
-            }
-            saveTargets()
+            for url in panel.urls where !targets.contains(where: { $0.url == url }) { targets.append(MappedFolder(url: url)) }
+            persistSession()
         }
     }
-    
-    func moveTargetFolders(from source: IndexSet, to destination: Int) {
-        targetFolders.move(fromOffsets: source, toOffset: destination)
-        saveTargets()
-    }
-    
-    func updateFolderColor(id: UUID, newHex: String) {
-        if let index = targetFolders.firstIndex(where: { $0.id == id }) {
-            targetFolders[index].colorHex = newHex
-            saveTargets()
+    func updateTarget(_ folder: MappedFolder) { if let index = targets.firstIndex(where: { $0.id == folder.id }) { targets[index] = folder; persistSession() } }
+    func removeTarget(_ id: UUID) { targets.removeAll { $0.id == id }; persistSession() }
+    func moveTargets(_ source: IndexSet, _ destination: Int) { targets.move(fromOffsets: source, toOffset: destination); persistSession() }
+    func saveRules() { if let data = try? JSONEncoder().encode(rules) { UserDefaults.standard.set(data, forKey: "sortflowRules") } }
+    func rulePlan() -> [PlannedTransfer] {
+        let entries = selectedFiles.isEmpty ? displayFiles : displayFiles.filter { selectedFiles.contains($0.url) }
+        return entries.compactMap { file in
+            guard let rule = rules.first(where: { $0.matches(file) }) else { return nil }
+            let destination = rule.target.appendingPathComponent(file.name)
+            return destination.standardizedFileURL == file.url ? nil : PlannedTransfer(source: file.url, destination: destination)
         }
     }
-    
-    func removeMappedFolder(id: UUID) {
-        targetFolders.removeAll(where: { $0.id == id })
-        saveTargets()
-    }
-    
-//    private func saveTargets() {
-//        if let encoded = try? JSONEncoder().encode(targetFolders) { UserDefaults.standard.set(encoded, forKey: "mappedFolders") }
-//    }
-//    
-//    private func loadTargets() {
-//        if let data = UserDefaults.standard.data(forKey: "mappedFolders"), let decoded = try? JSONDecoder().decode([MappedFolder].self, from: data) {
-//            targetFolders = decoded
-//        }
-//    }
-    
-    private func saveTargets() {
-        if let id = activeWorkspaceId, let index = workspaces.firstIndex(where: { $0.id == id }) {
-            workspaces[index].folders = targetFolders
-            if let encoded = try? JSONEncoder().encode(workspaces) { UserDefaults.standard.set(encoded, forKey: "savedWorkspaces") }
-            UserDefaults.standard.set(id.uuidString, forKey: "activeWorkspaceId")
+    func transferSelected(to folder: URL, external: [URL]? = nil) {
+        let urls = external ?? displayFiles.filter { selectedFiles.contains($0.url) }.map(\.url)
+        guard !urls.isEmpty, canAct else { return }
+        let linked = UserDefaults.standard.bool(forKey: "linkedFiles")
+        isBusy = true
+        Task {
+            let expanded = await Task.detached { linked ? FileService.linkedFiles(urls) : urls }.value
+            isBusy = false
+            runTransfers(expanded.map { PlannedTransfer(source: $0, destination: folder.appendingPathComponent($0.lastPathComponent)) }, mode: transferMode)
         }
     }
-        
-    private func loadTargets() {
-        // Wczytywanie profili
-        if let data = UserDefaults.standard.data(forKey: "savedWorkspaces"),
-            let decoded = try? JSONDecoder().decode([Workspace].self, from: data) {
-            workspaces = decoded
-        } else {
-            // Bezpieczna migracja starej wersji aplikacji (utrzymuje to co zmapowałeś do tej pory)
-                var initialFolders: [MappedFolder] = []
-                if let oldData = UserDefaults.standard.data(forKey: "mappedFolders"),
-                   let decodedOld = try? JSONDecoder().decode([MappedFolder].self, from: oldData) {
-                    initialFolders = decodedOld
-                }
-                workspaces = [Workspace(name: "Domyślny", folders: initialFolders)]
-            }
-            
-            // Ustawianie aktywnego profilu
-            if let savedIdString = UserDefaults.standard.string(forKey: "activeWorkspaceId"),
-               let savedId = UUID(uuidString: savedIdString),
-               let activeWs = workspaces.first(where: { $0.id == savedId }) {
-                activeWorkspaceId = savedId
-                targetFolders = activeWs.folders
-            } else if let first = workspaces.first {
-                activeWorkspaceId = first.id
-                targetFolders = first.folders
-            }
-        }
-        
-        func createWorkspace(name: String) {
-            let newWs = Workspace(name: name, folders: [])
-            workspaces.append(newWs)
-            switchWorkspace(id: newWs.id)
-        }
-        
-        func switchWorkspace(id: UUID) {
-            guard let ws = workspaces.first(where: { $0.id == id }) else { return }
-            activeWorkspaceId = id
-            targetFolders = ws.folders
-            saveTargets() // zapisujemy, żeby zapamiętać, który był ostatnio aktywny
-        }
-        
-        func deleteWorkspace(id: UUID) {
-            guard workspaces.count > 1 else { return } // Nie pozwalamy usunąć jedynego profilu
-            workspaces.removeAll { $0.id == id }
-            if activeWorkspaceId == id {
-                switchWorkspace(id: workspaces[0].id)
-            } else {
-                saveTargets()
-            }
-        }
-    
-    func isVideo(url: URL) -> Bool {
-        let uti = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
-        return uti?.contains("movie") == true || uti?.contains("video") == true || ["mp4", "mov", "mkv"].contains(url.pathExtension.lowercased())
+    func resolveConflict(_ choice: ConflictChoice) {
+        if applyToRemaining { cachedChoice = choice }
+        let continuation = conflictContinuation; conflictContinuation = nil; activeConflict = nil
+        continuation?.resume(returning: choice)
     }
-    func isImage(url: URL) -> Bool {
-        let uti = try? url.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
-        return uti?.contains("image") == true
+    private func askConflict(_ plan: PlannedTransfer) async -> ConflictChoice {
+        if let choice = cachedChoice { return choice }
+        return await withCheckedContinuation { continuation in conflictContinuation = continuation; activeConflict = FileConflict(plan: plan) }
     }
-    func isRAW(url: URL) -> Bool {
-        ["cr2", "cr3", "nef", "arw", "dng", "raw"].contains(url.pathExtension.lowercased())
-    }
-    func getFileSize(url: URL) -> Int? { try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize }
-    func getCreationDate(url: URL) -> Date? { try? url.resourceValues(forKeys: [.creationDateKey]).creationDate }
-    
-    // MARK: - Logika Duplikatów
-        
-        func findDuplicates() {
-            guard let folder = currentFolder else { return }
-            isScanningDuplicates = true
-            duplicateGroups = []
-            scanStatus = "Skanowanie plików..."
-            
-            Task.detached(priority: .userInitiated) {
-                let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey]
-                var sizeDict: [Int: [URL]] = [:]
-                
-                // 1. Zbieramy pliki i grupujemy po rozmiarze (najszybszy odsiew)
-                if let enumerator = FileManager.default.enumerator(at: folder, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles]) {
-                    for case let url as URL in enumerator {
-                        if let res = try? url.resourceValues(forKeys: Set(keys)), res.isDirectory == false, let size = res.fileSize {
-                            sizeDict[size, default: []].append(url)
-                        }
+    func cancelOperation() { operationFlag.cancel(); if conflictContinuation != nil { resolveConflict(.skip) } }
+    func runTransfers(_ plans: [PlannedTransfer], mode: TransferMode) {
+        guard canAct, !plans.isEmpty else { return }
+        isBusy = true; operationFlag = CancellationFlag(); let flag = operationFlag
+        operationDone = 0; operationTotal = plans.count; errors = []; cachedChoice = nil; applyToRemaining = false
+        let next = nextSelection(removing: Set(plans.map(\.source))), backups = backupRoot
+        Task {
+            var record = HistoryRecord(title: mode.title, items: [])
+            for plan in plans {
+                if flag.isCancelled { break }
+                let exists = await Task.detached { FileManager.default.fileExists(atPath: plan.destination.path) }.value
+                let choice: ConflictChoice = exists ? await askConflict(plan) : .keepBoth
+                if flag.isCancelled { break }
+                let result = await Task.detached { Result { try FileService.transfer(plan, mode: mode, choice: choice, backupRoot: backups) } }.value
+                switch result {
+                case .success(let item):
+                    if let item {
+                        record.items.append(item); persistRecord(record)
+                        completed.insert(plan.source); deferred.remove(plan.source)
+                        if mode == .move { stats.moved += 1 } else { stats.copied += 1 }
+                        stats.destinations[plan.destination.deletingLastPathComponent().path, default: 0] += 1
                     }
+                case .failure(let error): errors.append("\(plan.source.lastPathComponent): \(error.localizedDescription)")
                 }
-                
-                // Bierzemy tylko te, gdzie ten sam rozmiar ma więcej niż 1 plik
-                let potentialDuplicates = sizeDict.values.filter { $0.count > 1 }
-                var finalDuplicates: [[URL]] = []
-                
-                let totalToHash = potentialDuplicates.flatMap { $0 }.count
-                var hashedCount = 0
-                
-                // 2. Hashujemy zawartość podejrzanych plików strumieniowo
-                for group in potentialDuplicates {
-                    var hashDict: [String: [URL]] = [:]
-                    for url in group {
-                        await MainActor.run { self.scanStatus = "Analiza zawartości: \(hashedCount)/\(totalToHash)" }
-                        if let fileHash = self.hashFile(url: url) {
-                            hashDict[fileHash, default: []].append(url)
-                        }
-                        hashedCount += 1
-                    }
-                    
-                    // Zapisujemy grupy, które mają ten sam hash i >1 plików
-                    for sameHashGroup in hashDict.values where sameHashGroup.count > 1 {
-                        finalDuplicates.append(sameHashGroup)
-                    }
-                }
-                
-                await MainActor.run {
-                    self.duplicateGroups = finalDuplicates
-                    self.isScanningDuplicates = false
-                    self.scanStatus = ""
-                }
+                operationDone += 1
             }
+            finishRecord(record)
+            if UserDefaults.standard.object(forKey: "advanceAfterAction") as? Bool ?? true { selectedFiles = next.map { [$0] } ?? [] }
+            else if mode == .copy { for item in record.items { completed.remove(item.original) } }
+            notice = "\(mode.title): \(record.items.count)/\(plans.count)" + (flag.isCancelled ? tr(" · Anulowano", " · Cancelled") : "")
+            isBusy = false; rebuild(); persistSession(); if mode == .move { invalidateDuplicates() }
         }
-        
-        // Strumieniowe hashowanie (Prawdziwe zero wycieków RAM-u na gigantycznych plikach)
-        private func hashFile(url: URL) -> String? {
-            guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-            defer { try? handle.close() }
-        
-            var hasher = SHA256()
-        
-            while true {
-                // Blok autoreleasepool gwarantuje, że RAM nigdy nie spuchnie powyżej 4MB
-                let isEndOfFile = autoreleasepool {
-                    guard let chunk = try? handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty else {
-                        return true
-                    }
-                    hasher.update(data: chunk)
-                    return false
-                }
-                if isEndOfFile { break }
-            }
-            return hasher.finalize().compactMap { String(format: "%02x", $0) }.joined()
-        }
-        
-        // Usuwanie duplikatu prosto z widoku kart
-        func trashDuplicate(_ url: URL, from groupIndex: Int) {
-            var trashedURL: NSURL?
-            if (try? FileManager.default.trashItem(at: url, resultingItemURL: &trashedURL)) != nil, let trashed = trashedURL as URL? {
-                history.append(FileAction(description: "Usunięto duplikat", items: [(url, trashed)], isDeletion: true))
-                
-                // Aktualizujemy grupę duplikatów
-                if duplicateGroups.indices.contains(groupIndex) {
-                    duplicateGroups[groupIndex].removeAll { $0 == url }
-                    // Jeśli został 1 plik, to już nie jest duplikat - wywalamy całą grupę z listy
-                    if duplicateGroups[groupIndex].count <= 1 {
-                        duplicateGroups.remove(at: groupIndex)
-                    }
-                }
-                loadFiles() // Odświeżamy zwykłą listę w tle
-            }
-        }
-    
-        // Usuwa wszystkie pliki z danej grupy duplikatów
-        func trashDuplicateGroup(_ groupIndex: Int) {
-            guard duplicateGroups.indices.contains(groupIndex) else { return }
-            let urls = duplicateGroups[groupIndex]
-            var deletedItems: [(URL, URL)] = []
-            
+    }
+    func trashSelected() { trashFiles(Array(selectedFiles)) }
+    func trashFiles(_ urls: [URL], group: DuplicateGroup? = nil, keep: URL? = nil) {
+        guard canAct, !urls.isEmpty else { return }
+        isBusy = true; operationFlag = CancellationFlag(); let flag = operationFlag
+        operationDone = 0; operationTotal = urls.count; errors = []
+        let next = nextSelection(removing: Set(urls))
+        Task {
+            var record = HistoryRecord(title: tr("Do Kosza", "To Trash"), items: [])
             for url in urls {
-                var trashedURL: NSURL?
-                if (try? FileManager.default.trashItem(at: url, resultingItemURL: &trashedURL)) != nil, let trashed = trashedURL as URL? {
-                    deletedItems.append((url, trashed))
+                if flag.isCancelled { break }
+                let result = await Task.detached { () -> Result<UndoItem, Error> in
+                    Result {
+                        if let group {
+                            guard let scanned = group.files.first(where: { $0.url == url }), let now = try? FileEntry.read(url), now.size == scanned.size, now.modified == scanned.modified, now.identity == scanned.identity else { throw CocoaError(.fileReadUnknown) }
+                            if let keep {
+                                guard url != keep, try FileService.hash(keep, flag: flag) == group.id,
+                                      try FileService.identical(keep, url, flag: flag) else { throw CocoaError(.fileReadCorruptFile) }
+                            } else if try FileService.hash(url, flag: flag) != group.id { throw CocoaError(.fileReadCorruptFile) }
+                        }
+                        try flag.check()
+                        return try FileService.trash(url)
+                    }
+                }.value
+                switch result {
+                case .success(let item):
+                    record.items.append(item); persistRecord(record); completed.insert(url); deferred.remove(url); stats.trashed += 1
+                    if let entry = files.first(where: { $0.url == url }) { stats.bytes += entry.size }
+                    for index in duplicateGroups.indices { duplicateGroups[index].files.removeAll { $0.url == url } }
+                case .failure(let error): if !(error is CancellationError) { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
                 }
+                operationDone += 1
             }
-            
-            if !deletedItems.isEmpty {
-                history.append(FileAction(description: "Usunięto grupę duplikatów (\(deletedItems.count))", items: deletedItems, isDeletion: true))
-                duplicateGroups.remove(at: groupIndex)
-                loadFiles() // Odświeżamy główną listę plików w tle
+            duplicateGroups.removeAll { $0.files.count < 2 }
+            finishRecord(record); selectedFiles = next.map { [$0] } ?? []
+            notice = "\(tr("Do Kosza", "To Trash")): \(record.items.count)/\(urls.count)"; isBusy = false; rebuild(); persistSession()
+        }
+    }
+    func keepURL(for group: DuplicateGroup) -> URL? {
+        if let protected = protectedCopies[group.id], group.files.contains(where: { $0.url == protected }) { return protected }
+        if let preferredFolder, let entry = group.files.first(where: { $0.url.path.hasPrefix(preferredFolder.path + "/") }) { return entry.url }
+        return group.files.min { $0.created < $1.created }?.url
+    }
+    func findDuplicates() {
+        guard let folder = currentFolder, canAct else { return }
+        scanFlag.cancel(); scanFlag = CancellationFlag(); let flag = scanFlag, generation = UUID(), recurse = recursive
+        scanGeneration = generation; isScanning = true; duplicateGroups = []; selectedGroupID = nil; errors = []; progress = ScanProgress()
+        Task {
+            let result = await Task.detached(priority: .utility) {
+                Result { try ScanService.duplicates(folder, recursive: recurse, flag: flag) { status in
+                    Task { @MainActor in if self.scanGeneration == generation { self.progress = status } }
+                } }
+            }.value
+            guard scanGeneration == generation else { return }
+            isScanning = false
+            switch result {
+            case .success(let value): duplicateGroups = value.groups; errors = value.errors; selectedGroupID = value.groups.first?.id; notice = tr("Skanowanie zakończone", "Scan completed")
+            case .failure(let error): if !(error is CancellationError) { errors = [error.localizedDescription] }; notice = error is CancellationError ? tr("Skanowanie anulowane", "Scan cancelled") : error.localizedDescription
             }
         }
+    }
+    func cancelScan() { scanFlag.cancel(); listFlag.cancel() }
+    private func invalidateDuplicates() { duplicateGroups = []; selectedGroupID = nil }
+    private var historyDirectory: URL { support.appendingPathComponent("History", isDirectory: true) }
+    private func persistRecord(_ record: HistoryRecord) {
+        do {
+            try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(record).write(to: historyDirectory.appendingPathComponent(record.id.uuidString + ".json"), options: .atomic)
+        } catch { if errors.count < 1000 { errors.append(tr("Nie zapisano historii: ", "History could not be saved: ") + error.localizedDescription) } }
+    }
+    private func finishRecord(_ record: HistoryRecord) {
+        guard !record.items.isEmpty else { return }
+        history.insert(record, at: 0); if history.count > historyLimit { history = Array(history.prefix(historyLimit)) }
+    }
+    func loadHistory(more: Bool = false) {
+        if more { historyLimit += 100 }
+        let urls = (try? FileManager.default.contentsOfDirectory(at: historyDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        // Wczytujemy tylko widoczną stronę historii; starsze rekordy pozostają na dysku.
+        let recent = urls.sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }.prefix(historyLimit)
+        history = recent.compactMap { try? JSONDecoder().decode(HistoryRecord.self, from: Data(contentsOf: $0)) }.sorted { $0.date > $1.date }
+    }
+    func undo(_ record: HistoryRecord? = nil) {
+        guard canAct, let record = record ?? history.first else { return }
+        isBusy = true; errors = []; operationFlag = CancellationFlag(); let flag = operationFlag
+        Task {
+            var remaining = record.items
+            for item in record.items.reversed() {
+                if flag.isCancelled { break }
+                let result = await Task.detached { Result { try FileService.undo(item) } }.value
+                switch result {
+                case .success: remaining.removeAll { $0.original == item.original && $0.current == item.current }; completed.remove(item.original)
+                case .failure(let error): errors.append("\(item.original.lastPathComponent): \(error.localizedDescription)")
+                }
+                var updated = record; updated.items = remaining
+                if remaining.isEmpty { try? FileManager.default.removeItem(at: historyDirectory.appendingPathComponent(record.id.uuidString + ".json")) }
+                else { persistRecord(updated) }
+            }
+            loadHistory(); isBusy = false; invalidateDuplicates(); loadFiles()
+            notice = remaining.isEmpty ? tr("Cofnięto operację", "Operation undone") : tr("Nie cofnięto wszystkich plików — możesz ponowić", "Some files were not restored — you can retry")
+        }
+    }
 }

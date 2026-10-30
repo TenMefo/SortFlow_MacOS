@@ -91,3 +91,4 @@ Instead of manually clicking through Finder, choose a base folder, map your targ
 
 ## 👨‍💻 Author
 **[Ten_Mefo](https://www.instagram.com/ten_mefo/)** and Gemini 3.1 Pro
+

@@ -1,1265 +1,349 @@
 import SwiftUI
-import AVKit
-import QuickLookThumbnailing
-import UniformTypeIdentifiers
-import Quartz
-
-// MARK: - Rozszerzenia (Extensions)
-
-extension Color {
-    init(hex: String) {
-        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
-        var int: UInt64 = 0
-        Scanner(string: hex).scanHexInt64(&int)
-        let r, g, b: UInt64
-        switch hex.count {
-        case 3: (r, g, b) = ((int >> 8) * 17, (int >> 4 & 0xF) * 17, (int & 0xF) * 17)
-        case 6: (r, g, b) = (int >> 16, int >> 8 & 0xFF, int & 0xFF)
-        default: (r, g, b) = (138, 43, 226) // Fiolet
-        }
-        self.init(red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255)
-    }
-}
-
-extension URL {
-    var isVideo: Bool {
-        let ext = self.pathExtension.lowercased()
-        
-        if ["mp4", "mov", "mkv", "avi", "m4v"].contains(ext) { return true}
-        if ["jpg", "jpeg", "png", "heic", "gif", "webp", "tiff", "raw"].contains(ext) { return false}
-        
-        let uti = try? self.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
-        return uti?.contains("movie") == true || uti?.contains("video") == true
-    }
-    
-    var isDocument: Bool {
-        let ext = self.pathExtension.lowercased()
-        if ["txt", "md", "rtf", "rtfd", "doc", "docx", "pdf", "csv", "pages", "json", "xml", "html"].contains(ext) { return true }
-        let uti = try? self.resourceValues(forKeys: [.typeIdentifierKey]).typeIdentifier
-        return uti?.contains("text") == true || uti?.contains("pdf") == true || uti?.contains("document") == true
-    }
-}
-
-// MARK: - Typy (Enums) i Modele
-
-enum AppLanguage: String, CaseIterable, Identifiable {
-    case pl = "PL"
-    case en = "EN"
-    var id: String { rawValue }
-}
-
-enum PreviewMode: String, CaseIterable, Identifiable {
-    case aspectFit = "aspectFit"
-    case aspectFill = "aspectFill"
-    case fitWithBlur = "fitWithBlur"
-    var id: Self { self }
-    
-    func localized(_ lang: AppLanguage) -> String {
-        switch self {
-        case .aspectFit: return lang == .pl ? "Dopasuj do okna" : "Fit to window"
-        case .aspectFill: return lang == .pl ? "Wypełnij" : "Fill"
-        case .fitWithBlur: return lang == .pl ? "Całe zdjęcie + Blur" : "Full image + Blur"
-        }
-    }
-}
-
-enum DocumentPreviewMode: String, CaseIterable, Identifiable {
-    case fullWidth = "fullWidth"
-    case padded = "padded"
-    var id: Self { self }
-    
-    func localized(_ lang: AppLanguage) -> String {
-        switch self {
-        case .fullWidth: return lang == .pl ? "Pełna szerokość" : "Full width"
-        case .padded: return lang == .pl ? "Z marginesami" : "With margins"
-        }
-    }
-}
-
-enum AppMode {
-    case browsing
-    case duplicates
-}
-
-let predefinedColors: [(namePL: String, nameEN: String, hex: String)] = [
-    ("Czerwony", "Red", "#FF3B30"), ("Pomarańczowy", "Orange", "#FF9500"), ("Żółty", "Yellow", "#FFCC00"),
-    ("Zielony", "Green", "#28CD41"), ("Miętowy", "Mint", "#00C7BE"), ("Niebieski", "Blue", "#007AFF"),
-    ("Fioletowy", "Purple", "#8A2BE2"), ("Różowy", "Pink", "#FF2D55"), ("Szary", "Gray", "#8E8E93")
-]
-
-struct FileMetadataModel {
-    let url: URL
-    let name: String
-    let path: String
-    let size: Int64
-    let creationDate: Date?
-    let modDate: Date?
-}
-
-// MARK: - Główny Widok (ContentView)
+import AppKit
 
 struct ContentView: View {
-    @StateObject var manager = FolderManager()
-    
-    @AppStorage("previewMode") private var previewMode: PreviewMode = .aspectFit
-    @AppStorage("videoAutoplay") private var videoAutoplay = true
-    @AppStorage("videoSound") private var videoSound = false
-    @AppStorage("videoLoop") private var videoLoop = true
-    @AppStorage("showListThumbnails") private var showListThumbnails = true
-    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
-    @AppStorage("docPreviewMode") private var docPreviewMode: DocumentPreviewMode = .padded
-
-    @State private var currentMode: AppMode = .browsing
-    @State private var selectedDuplicateGroupIndex: Int?
-    @State private var showNewWorkspaceDialog = false
-    @State private var newWorkspaceName = ""
-    @State private var isSettingsExpanded = false
-    
-    // Helper do łatwego tłumaczenia w widoku
-    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
-    private func getDriveIcon(for url: URL) -> String {
-        // 1. Cloud
-        if let isUbiquitous = try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem, isUbiquitous {
-            return "icloud.fill"
-        }
-        let lowerPath = url.path.lowercased()
-        if lowerPath.contains("google drive") || lowerPath.contains("onedrive") || lowerPath.contains("dropbox") || lowerPath.contains("cloud") {
-            return "cloud.fill"
-        }
-        
-        // 2. Dysk wewn. vs zewn.
-        // isInternal nie działą na karty SD
-        if let res = try? url.resourceValues(forKeys: [.volumeIsEjectableKey, .volumeIsRemovableKey, .volumeIsInternalKey]) {
-            if res.volumeIsEjectable == true || res.volumeIsRemovable == true {
-                return "externaldrive.fill"
-            }
-            if res.volumeIsInternal == true {
-                return "applelogo"
-            }
-        }
-        // 3. Fallback
-        return "folder.fill"
-    }
-    
+    @EnvironmentObject private var manager: FolderManager
+    @AppStorage("appLanguage") private var language: AppLanguage = .pl
+    @AppStorage("lowMemory") private var lowMemory = true
+    @AppStorage("showListThumbnails") private var thumbnails = true
+    @State private var mode: AppMode = .files
+    @State private var focused = false
+    @State private var columns: NavigationSplitViewVisibility = .all
+    @State private var showInfo = false
+    @State private var showFilters = false
+    @State private var showHistory = false
+    @State private var showReport = false
+    @State private var showSummary = false
+    @State private var showRules = false
+    @State private var showRename = false
+    @State private var showCompare = false
+    @State private var newProfile = false
+    @State private var profileName = ""
+    @State private var editedTarget: MappedFolder?
+    @State private var planned: [PlannedTransfer] = []
+    @State private var showPlan = false
+    @State private var hoveringTarget: UUID?
+    @State private var targetAvailability: [UUID: Bool] = [:]
+    private var group: DuplicateGroup? { manager.duplicateGroups.first { $0.id == manager.selectedGroupID } }
     var body: some View {
-        NavigationSplitView {
-            // ==========================================
-            // LEWA KOLUMNA: Nawigacja i listy
-            // ==========================================
-            VStack(spacing: 0) {
-                VStack(spacing: 12) {
-                    VStack(spacing: 8){
-                        Button(action: {
-                            manager.selectFolderToBrowse()
-                            currentMode = .browsing
-                        }) {
-                            Text(t("Wybierz folder bazowy", "Select base folder"))
-                                .frame(maxWidth: .infinity, minHeight: 28)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        
-                        if currentMode == .browsing {
-                            Button(action: {
-                                currentMode = .duplicates
-                                selectedDuplicateGroupIndex = nil
-                                manager.findDuplicates()
-                            }) {
-                                HStack {
-                                    Image(systemName: "doc.on.doc")
-                                    Text(t("Znajdź duplikaty", "Find duplicates"))
-                                }
-                                .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.bordered)
-                            .disabled(manager.currentFolder == nil || manager.isScanningDuplicates)
-                        } else {
-                            Button(action: {
-                                currentMode = .browsing
-                            }) {
-                                HStack {
-                                    Image(systemName: "arrow.left")
-                                    Text(t("Wróć do przeglądania", "Back to browsing"))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 28)
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-                    
-                    if currentMode == .browsing {
-                        HStack {
-                            Text(t("Sortowanie:", "Sort by:"))
-                            Spacer()
-                            Picker("", selection: $manager.sortType) {
-                                Text(t("Alfabetycznie A-Z", "Alphabetically A-Z")).tag(SortType.nameAZ)
-                                Text(t("Alfabetycznie Z-A", "Alphabetically Z-A")).tag(SortType.nameZA)
-                                Text(t("Rozmiar (Malejąco)", "Size (Descending)")).tag(SortType.sizeDesc)
-                                Text(t("Rozmiar (Rosnąco)", "Size (Ascending)")).tag(SortType.sizeAsc)
-                                Text(t("Według typu", "By type")).tag(SortType.type)
-                            }
-                            .labelsHidden()
-                            .frame(width: 155)
-                        }
-                        .font(.caption)
-                        
-                        HStack {
-                            Toggle(t("Podfoldery", "Subfolders"), isOn: $manager.isRecursive)
-                            Spacer()
-                            Toggle(t("Miniatury", "Thumbnails"), isOn: $showListThumbnails)
-                        }
-                        .font(.caption)
-                    }
-                }
-                .padding(.horizontal)
-                .padding(.top, 16)
-                .padding(.bottom, 8)
-                .background(Color(NSColor.windowBackgroundColor))
-                .zIndex(1)
-                .shadow(color: Color.black.opacity(0.08), radius: 4, x: 0, y: 3)
-                
-                if currentMode == .browsing {
-                    List(selection: $manager.selectedFiles) {
-                        ForEach(manager.displayFiles, id: \.self) { file in
-                            HStack {
-                                if showListThumbnails {
-                                    AsyncThumbnail(url: file, size: CGSize(width: 30, height: 30), isIcon: true)
-                                        .frame(width: 30, height: 30)
-                                        .clipShape(RoundedRectangle(cornerRadius: 4))
-                                } else {
-                                    Image(nsImage: NSWorkspace.shared.icon(forFile: file.path))
-                                        .resizable()
-                                        .frame(width: 20, height: 20)
-                                        .padding(.horizontal, 5)
-                                }
-                                
-                                VStack(alignment: .leading) {
-                                    Text(file.lastPathComponent).lineLimit(1)
-                                    if manager.isRecursive {
-                                        Text(file.deletingLastPathComponent().lastPathComponent).font(.system(size: 9)).foregroundColor(.gray)
-                                    }
-                                }
-                            }.tag(file)
-                                .contextMenu{
-                                    Button(action: {NSWorkspace.shared.activateFileViewerSelecting([file.absoluteURL])})
-                                    {
-                                        Text(t("Pokaż w Finder", "Show in Finder"))
-                                        Image(systemName: "magnifyingglass")
-                                    }
-                                }
-                        }
-                    }
-                } else {
-                    // --- TRYB: DUPLIKATY ---
-                    if manager.isScanningDuplicates {
-                        VStack(spacing: 12) {
-                            Spacer()
-                            ProgressView()
-                            Text(t("Skanowanie plików...", "Scanning files..."))
-                                .font(.caption).foregroundColor(.gray).multilineTextAlignment(.center).padding()
-                            Spacer()
-                        }
-                    } else if manager.duplicateGroups.isEmpty {
-                        VStack {
-                            Spacer()
-                            Image(systemName: "checkmark.seal.fill").font(.largeTitle).foregroundColor(.green)
-                            Text(t("Brak duplikatów!", "No duplicates found!")).font(.headline).padding(.top, 4)
-                            Spacer()
-                        }
-                    } else {
-                        List(selection: $selectedDuplicateGroupIndex) {
-                            ForEach(manager.duplicateGroups.indices, id: \.self) { index in
-                                HStack {
-                                    Image(systemName: "folder.fill.badge.person.crop").foregroundColor(.purple)
-                                    VStack(alignment: .leading) {
-                                        Text(t("Grupa \(index + 1)", "Group \(index + 1)")).bold()
-                                        Text(t("\(manager.duplicateGroups[index].count) plików", "\(manager.duplicateGroups[index].count) files"))
-                                            .font(.caption).foregroundColor(.gray)
-                                    }
-                                }
-                                .tag(index)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationSplitViewColumnWidth(min: 240, ideal: 280)
-            
+        NavigationSplitView(columnVisibility: $columns) {
+            sidebar.navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 400)
         } detail: {
-            HStack(spacing: 0) {
-                if currentMode == .browsing {
-                    // ==========================================
-                    // ŚRODKOWA KOLUMNA: Podgląd pliku
-                    // ==========================================
-                    VStack(spacing: 0) {
-                        if let folder = manager.currentFolder {
-                            HStack(spacing: 8) {
-                                Menu {
-                                    let path = folder.path
-                                    let shortenedPath = path.count > 45 ? String(path.prefix(45)) + "..." : path
-                                    Text(shortenedPath)
-                                    
-                                    Divider()
-                                    
-                                    Button(action: {NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: folder.path)}){
-                                        Text(t("Otwórz w Finder", "Open in Finder"))
-                                        Image(systemName: "finder") // Zostawiłem Twoją ikonkę "finder"
-                                    }
-                                    Button(action: {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(folder.path, forType: .string)
-                                    }){
-                                        Text(t("Skopiuj ścieżkę", "Copy path"))
-                                        Image(systemName: "doc.on.clipboard")
-                                    }
-                                } label: {
-                                    Color.clear
-                                        .frame(width: 32, height: 32)
-                                        .overlay(
-                                            Image(systemName: getDriveIcon(for: folder))
-                                                .font(.title2)
-                                        )
-                                        .contentShape(Rectangle())
-                                    
-                                }
-                                .menuStyle(.borderlessButton)
-                                .menuIndicator(.hidden)
-                                .fixedSize()
-                                
-                                
-                                Text("|").foregroundColor(.gray).font(.title3)
-                                
-                                Text(folder.lastPathComponent)
-                                    .font(.title2)
-                                    .fontWeight(.semibold)
-                                
-                                Text("|").foregroundColor(.gray).font(.title3)
-                                
-                                Text("\(manager.displayFiles.count) \(t("plików", "files"))")
-                                    .font(.title3)
-                                    .foregroundColor(.secondary)
-                            }
-                            .padding(.vertical, 10)
-                            .zIndex(1)
-                        }
-                        
-                        if manager.selectedFiles.count > 1 {
-                            VStack(spacing: 16) {
-                                Image(systemName: "square.stack.3d.up.fill").font(.system(size: 60))
-                                Text(t("Wybrano \(manager.selectedFiles.count) plików", "Selected \(manager.selectedFiles.count) files"))
-                                    .font(.title).fontWeight(.bold)
-                            }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let selected = manager.selectedFiles.first {
-                            FilePreview(url: selected, previewMode: previewMode, autoplay: videoAutoplay, sound: videoSound, loop: videoLoop, isFitted: false, docPreviewMode: docPreviewMode)
-                                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                .padding()
-                                .onDrag { NSItemProvider(object: selected as NSURL) }
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    
-                    Divider()
-                    
-                    // ==========================================
-                    // PRAWA KOLUMNA: Opcje i mapowanie
-                    // ==========================================
-                    VStack(spacing: 12) {
-                        // ===== ROZWIJANE MENU USTAWIEŃ
-                        GroupBox {
-                            DisclosureGroup(isExpanded: $isSettingsExpanded) {
-                                VStack(alignment: .leading, spacing: 12) {
-                                                
-                                // 1. Język
-                                HStack {
-                                    Text(t("Język:", "Language:"))
-                                    Spacer()
-                                    Picker("", selection: $appLanguage){
-                                    ForEach(AppLanguage.allCases) { lang in Text(lang.rawValue).tag(lang)}
-                                    }
-                                    .pickerStyle(.segmented)
-                                    .frame(width: 100)
-                                }
-                                Divider()
-                                                            
-                                // 2. Styl podglądu (Opis nad pickerem)
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(t("Opcje stylu dotyczą tylko zdjęć", "Style options apply to photos only"))
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.gray)
-                                                                
-                                    Picker("", selection: $previewMode) {
-                                        ForEach(PreviewMode.allCases) { Text($0.localized(appLanguage)).tag($0) }
-                                    }
-                                    .labelsHidden()
-                                    .frame(maxWidth: .infinity)
-                                }
-                                                            
-                                Divider()
-                                                            
-                                // 3. Przełączniki wideo (Styl suwaków / switch)
-                                VStack(spacing: 8) {
-                                    Text(t("Poniższe opcje dotyczą tylko plików wideo", "The following options apply only to video files"))
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.gray)
-                                                                
-                                    Toggle(t("Auto-wideo", "Auto-video"), isOn: $videoAutoplay)
-                                        .toggleStyle(.switch)
-                                    Toggle(t("Dźwięk wideo", "Video sound"), isOn: $videoSound)
-                                        .toggleStyle(.switch).disabled(!videoAutoplay)
-                                    Toggle(t("Odtwarzaj zapętlone", "Play in loop"), isOn: $videoLoop)
-                                        .toggleStyle(.switch).disabled(!videoAutoplay)
-                                }
-                                
-                                Divider()
-                                
-                                // 4. Przełączniki dla tekstów
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text(t("Styl dla dokumentów i tekstu", "Style for documents and text"))
-                                        .font(.system(size: 11))
-                                        .foregroundColor(.gray)
-                                                                        
-                                    Picker("", selection: $docPreviewMode) {
-                                        ForEach(DocumentPreviewMode.allCases) { Text($0.localized(appLanguage)).tag($0) }
-                                    }
-                                    .labelsHidden()
-                                    .frame(maxWidth: .infinity)
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 8)
-                        } label: {
-                            Text(t("Ustawienia","Settings")).font(.headline)
-                        }
-                    }
-                    .padding(.top)
-                    .padding(.bottom, 16)
-                        
-                        // ===== PROFILE I FOLDERY DOCELOWE
-                        HStack {
-                            Text(t("Przenieś do:", "Move to:")).font(.headline)
-                            Spacer()
-                                                    
-                            Menu {
-                                ForEach(manager.workspaces) { ws in
-                                    Button(action: { manager.switchWorkspace(id: ws.id) }) {
-                                        Text(ws.name)
-                                        if ws.id == manager.activeWorkspaceId { Image(systemName: "checkmark") }
-                                    }
-                                }
-                                Divider()
-                                                        
-                                Button(action: { showNewWorkspaceDialog = true }) {
-                                    Text(t("Nowy profil...", "New profile..."))
-                                    Image(systemName: "plus")
-                                }
-                                                        
-                                if manager.workspaces.count > 1, let activeId = manager.activeWorkspaceId {
-                                    Button(role: .destructive, action: { manager.deleteWorkspace(id: activeId) }) {
-                                        Text(t("Usuń ten profil", "Delete this profile"))
-                                        Image(systemName: "trash")
-                                    }
-                                }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Text(manager.workspaces.first(where: { $0.id == manager.activeWorkspaceId })?.name ?? "")
-                                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
-                                }
-                                .foregroundColor(.accentColor)
-                            }
-                            .menuStyle(.borderlessButton)
-                            .fixedSize()
-                        }
-                        
-                        // ===== LISTA FOLDERÓW
-                        List {
-                            ForEach(manager.targetFolders) { folder in
-                                let isAvailable = (try? folder.url.checkResourceIsReachable()) ?? false
-                                let isExternal = folder.url.path.hasPrefix("/Volumes/")
-                                
-                                HStack {
-                                    Button(action: { manager.moveSelectedFiles(to: folder.url) }) {
-                                        HStack {
-                                            if isAvailable{
-                                                Image(systemName: "folder.fill").foregroundColor(Color(hex: folder.colorHex))
-                                                Text(folder.url.lastPathComponent).fontWeight(.medium)
-                                            } else {
-                                                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.red)
-                                                VStack(alignment: .leading, spacing: 2) {
-                                                    Text(folder.url.lastPathComponent)
-                                                        .fontWeight(.medium)
-                                                        .strikethrough()
-                                                        .foregroundColor(.gray)
-                                                    
-                                                    Text(isExternal ? t("Odłączono dysk", "Drive disconnected") : t("Folder przeniesiony/usunięty", "Folder moved/deleted"))
-                                                        .font(.system(size: 9))
-                                                        .foregroundColor(.red)
-                                                }
-                                            }
-                                        }
-                                        .padding(.vertical, 6).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(manager.selectedFiles.isEmpty || !isAvailable)
-                                    .help(isAvailable ? folder.url.path : t("Brak dostępu do ścieżki:\n\(folder.url.path)", "No access to path:\n\(folder.url.path)"))
-                                    
-                                    Menu {
-                                        // Opcja 1: Kolory (zagnieżdżone)
-                                        Menu(t("Kolor", "Color")) {
-                                            ForEach(predefinedColors, id: \.hex) { color in
-                                                Button(appLanguage == .pl ? color.namePL : color.nameEN) { manager.updateFolderColor(id: folder.id, newHex: color.hex) }
-                                            }
-                                        }.disabled(!isAvailable)
-                                        
-                                        // Opcja 2: Usuń tylko przypisanie folderu
-                                        Button(role: .destructive, action: { manager.removeMappedFolder(id: folder.id) }) {
-                                            Text(t("Usuń z listy", "Remove from list"))
-                                        }
-                                        
-                                        // Opcja 3: Otwórz w systemowym finderze
-                                        Button(action: { NSWorkspace.shared.activateFileViewerSelecting([folder.url]) }) {
-                                            Text(t("Otwórz w Finder", "Open in Finder"))
-                                        }.disabled(!isAvailable)
-                                        
-                                    } label: { Image(systemName: "ellipsis.circle").foregroundColor(.gray) }
-                                        .menuStyle(.borderlessButton).frame(width: 30)
-                                        .menuIndicator(.hidden)
-                                }
-                                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                                    guard isAvailable else { return false }
-                                        
-                                    for provider in providers {
-                                        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                                            if let fileURL = url { DispatchQueue.main.async { manager.moveFile(fileURL, to: folder.url) } }
-                                        }
-                                    }
-                                    return true
-                                }
-                            }
-                            .onMove { i, o in manager.moveTargetFolders(from: i, to: o) }
-                        }
-                        // ===== DOLNE PRZYCISKI
-                        Button(action: {manager.addTargetFolders() }) {
-                            Text(t("Zmapuj nowe foldery...", "Map new folders..."))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.accentColor)
-                        .padding(.vertical, 4)
-                        
-                        HStack(spacing: 8) {
-                            Button(action: { manager.deleteSelectedFiles() }) {
-                                HStack {
-                                    Image(systemName: "trash.fill")
-                                    Text(manager.selectedFiles.count > 1 ? t("Usuń (\(manager.selectedFiles.count))", "Delete (\(manager.selectedFiles.count))") : t("Do kosza", "To trash"))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 24)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .tint(.red)
-                            .disabled(manager.selectedFiles.isEmpty)
-                            
-                            Menu {
-                                if manager.history.isEmpty {
-                                    Text(t("Brak operacji do cofnięcia", "No operations to undo"))
-                                } else {
-                                    ForEach(manager.history.suffix(5).reversed()) { action in
-                                        Button(action: { manager.undoAction(id: action.id) }) {
-                                            
-                                            // Dla jednego pliku wyświetlamy jego nazwę
-                                            if action.items.count == 1, let singleItem = action.items.first {
-                                                
-                                                Text(t("Cofnij: \(singleItem.original.lastPathComponent)", "Undo: \(singleItem.original.lastPathComponent)"))
-                                                
-                                            } else {
-                                                // Dla wielu plików wyświetlamy opis
-                                                Text(action.description)
-                                            }
-                                        }
-                                    }
-                                }
-                            } label: {
-                                HStack {
-                                    Image(systemName: "arrow.uturn.backward")
-                                    Text(t("Cofnij...", "Undo..."))
-                                }
-                                .frame(maxWidth: .infinity, minHeight: 24)
-                            }
-                            .menuStyle(.borderlessButton)
-                            .buttonStyle(.bordered)
-                            .disabled(manager.history.isEmpty)
-                        }
-                        .padding(.bottom)
-                    }
-                    .padding(.horizontal).frame(width: 260).background(Color(NSColor.controlBackgroundColor))
-                    .alert(t("Nowy profil", "New profile"), isPresented: $showNewWorkspaceDialog) {
-                        TextField(t("Nazwa", "Name"), text: $newWorkspaceName)
-                        Button("OK") {
-                            if !newWorkspaceName.isEmpty {
-                                manager.createWorkspace(name: newWorkspaceName)
-                                newWorkspaceName = ""
-                            }
-                        }
-                        Button(t("Anuluj", "Cancel"), role: .cancel) {
-                            newWorkspaceName = ""
-                        }
-                    }
-                    // Do konlfiktów
-                    .sheet(item: $manager.activeConflict) { conflict in
-                        ConflictResolutionView(conflict: conflict, manager: manager)
-                    }
-                }
-                else {
-                    // ==========================================
-                    // TRYB: PORÓWNANIE DUPLIKATÓW
-                    // ==========================================
-                    if let groupIndex = selectedDuplicateGroupIndex, manager.duplicateGroups.indices.contains(groupIndex) {
-                        DuplicateCompareView(
-                            groupIndex: groupIndex,
-                            urls: manager.duplicateGroups[groupIndex],
-                            manager: manager,
-                            previewMode: previewMode,
-                            autoplay: videoAutoplay,
-                            sound: videoSound
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    } else {
-                        Text(t("Wybierz grupę duplikatów z listy po lewej stronie", "Select a duplicate group from the left list"))
-                            .foregroundColor(.gray)
-                            .font(.title2)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
+            HSplitView {
+                previewArea.frame(minWidth: 300, maxWidth: .infinity, maxHeight: .infinity)
+                if mode == .files { targetPanel.frame(minWidth: 210, idealWidth: 250, maxWidth: 340) }
             }
         }
+        .navigationTitle("SortFlow")
+        .navigationSubtitle(manager.currentFolder?.lastPathComponent ?? tr("Uporządkuj swoje pliki", "Make room for what matters"))
+        .toolbar { toolbar }
+        .safeAreaInset(edge: .bottom, spacing: 0) { statusBar }
+        .background(KeyboardBridge { handleKey($0) }.frame(width: 0, height: 0))
+        .frame(minWidth: 900, minHeight: 600)
+        .onChange(of: focused) { _, value in columns = value ? .detailOnly : .all }
+        .onChange(of: mode) { _, _ in focused = false }
+        .onChange(of: manager.filter) { _, _ in ensureSelection() }
+        .onChange(of: manager.displayFiles) { _, _ in ensureSelection() }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            guard let provider = providers.first, manager.canAct else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in manager.openFolder(url) } } }; return true
+        }
+        .sheet(item: $manager.activeConflict, onDismiss: { manager.resolveConflict(.skip) }) { conflict in ConflictView(conflict: conflict).environmentObject(manager).interactiveDismissDisabled() }
+        .sheet(item: $editedTarget) { folder in TargetEditor(folder: folder) { manager.updateTarget($0) } }
+        .sheet(isPresented: $showHistory) { HistoryView().environmentObject(manager) }
+        .sheet(isPresented: $showReport) { reportView }
+        .sheet(isPresented: $showSummary) { summaryView }
+        .sheet(isPresented: $showRules) { RulesView().environmentObject(manager) }
+        .sheet(isPresented: $showRename) { RenameView(files: manager.displayFiles.filter { manager.selectedFiles.contains($0.url) }) { plan in planned = plan; showPlan = true } }
+        .sheet(isPresented: $showPlan) { TransferPlanView(plans: planned, mode: manager.transferMode) { manager.runTransfers(planned, mode: manager.transferMode) } }
+        .sheet(isPresented: $showCompare) { CompareImagesView(files: manager.displayFiles.filter { manager.selectedFiles.contains($0.url) }) }
+        .alert(tr("Nowy profil", "New workspace"), isPresented: $newProfile) {
+            TextField(tr("Nazwa", "Name"), text: $profileName)
+            Button(tr("Utwórz", "Create")) { manager.createWorkspace(profileName); profileName = "" }
+            Button(tr("Anuluj", "Cancel"), role: .cancel) { profileName = "" }
+        }
+        .task(id: manager.targets) { await refreshTargets() }
+        .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.didMountNotification, object: nil)) { _ in Task { await refreshTargets() } }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in Task { await refreshTargets() } }
     }
-}
-
-
-// MARK: - Moduł Porównywania Duplikatów
-
-struct DuplicateCompareView: View {
-    let groupIndex: Int
-    let urls: [URL]
-    @ObservedObject var manager: FolderManager
-    let previewMode: PreviewMode
-    let autoplay: Bool
-    let sound: Bool
-    
-    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
-    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
-    
-    @State private var metas: [FileMetadataModel] = []
-    
-    var body: some View {
-        HStack(spacing: 0) {
-            // LEWA STRONA: Lista detali
-            ScrollView(.vertical, showsIndicators: true) {
-                VStack(spacing: 20) {
-                    Text(t("Porównanie (\(urls.count) plików)", "Comparison (\(urls.count) files)"))
-                        .font(.title2).bold().padding(.top)
-                    
-                    Button(role: .destructive, action: {
-                        manager.trashDuplicateGroup(groupIndex)
-                    }) {
-                        HStack {
-                            Image(systemName: "trash.fill")
-                            Text(t("Usuń wszystkie (\(urls.count)) pliki z grupy", "Delete all (\(urls.count)) files from group"))
-                                .fontWeight(.bold)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .padding(.horizontal)
-                    
-                    ForEach(urls, id: \.self) { url in
-                        if let meta = metas.first(where: { $0.url == url }) {
-                            DuplicateDetailCard(
-                                url: url,
-                                meta: meta,
-                                groupIndex: groupIndex,
-                                manager: manager,
-                                isNameDiff: differs(in: \.name),
-                                isCreationDiff: differs(in: \.creationDate),
-                                isModDiff: differs(in: \.modDate)
-                            )
-                        }
-                    }
+    private var sidebar: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(mode == .files ? tr("PLIKI", "FILES") : tr("DUPLIKATY", "DUPLICATES")).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Spacer()
+                if mode == .files {
+                    Toggle(isOn: $thumbnails) { Image(systemName: "photo.on.rectangle") }.toggleStyle(.button).help(tr("Miniatury", "Thumbnails"))
+                    Text("\(manager.displayFiles.count)").monospacedDigit().foregroundStyle(.secondary)
                 }
-                .padding(.bottom)
-            }
-            .frame(width: 350)
-            
+            }.padding(12)
             Divider()
-            
-            // PRAWA STRONA: Pełny podgląd (wymuszamy isFitted: true)
-            if let firstUrl = urls.first {
-                VStack(spacing: 0) {
-                    Text(firstUrl.lastPathComponent)
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .padding(.vertical, 10)
-                    
-                    FilePreview(url: firstUrl, previewMode: previewMode, autoplay: autoplay, sound: sound, isFitted: true)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .onAppear(perform: loadMetas)
-        .onChange(of: urls) { _, _ in loadMetas() }
-    }
-    
-    private func differs<T: Hashable>(in keyPath: KeyPath<FileMetadataModel, T>) -> Bool {
-        let uniqueValues = Set(metas.map { $0[keyPath: keyPath] })
-        return uniqueValues.count > 1
-    }
-    
-    private func loadMetas() {
-        var newMetas: [FileMetadataModel] = []
-        for url in urls {
-            let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
-            let res = try? url.resourceValues(forKeys: [.creationDateKey])
-            newMetas.append(FileMetadataModel(
-                url: url,
-                name: url.lastPathComponent,
-                path: url.path,
-                size: (attr?[.size] as? Int64) ?? 0,
-                creationDate: res?.creationDate,
-                modDate: attr?[.modificationDate] as? Date
-            ))
-        }
-        self.metas = newMetas
-    }
-}
-
-// Osobny komponent dla karty
-struct DuplicateDetailCard: View {
-    let url: URL
-    let meta: FileMetadataModel
-    let groupIndex: Int
-    @ObservedObject var manager: FolderManager
-    let isNameDiff: Bool
-    let isCreationDiff: Bool
-    let isModDiff: Bool
-    
-    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
-    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
-    
-    var body: some View {
-        VStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                InfoRow(title: t("Nazwa:", "Name:"), value: meta.name, isDiff: isNameDiff)
-                InfoRow(title: t("Rozmiar:", "Size:"), value: formatSize(meta.size), isDiff: false)
-                InfoRow(title: t("Utworzono:", "Created:"), value: formatDate(meta.creationDate), isDiff: isCreationDiff)
-                InfoRow(title: t("Zmieniono:", "Modified:"), value: formatDate(meta.modDate), isDiff: isModDiff)
-                InfoRow(title: t("Ścieżka:", "Path:"), value: url.path, isDiff: true, urlToOpen: url)
-            }
-            .font(.system(size: 12))
-            .padding()
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color(NSColor.windowBackgroundColor))
-            .cornerRadius(8)
-            
-            Button(role: .destructive, action: {
-                manager.trashDuplicate(url, from: groupIndex)
-            }) {
-                HStack {
-                    Image(systemName: "trash")
-                    Text(t("Usuń ten plik", "Delete this file"))
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-        }
-        .padding(.horizontal)
-        
-    }
-    
-    private func formatSize(_ bytes: Int64) -> String {
-        String(format: "%.2f MB", Double(bytes) / 1048576)
-    }
-    
-    private func formatDate(_ date: Date?) -> String {
-        guard let date = date else { return t("Brak", "N/A") }
-        let df = DateFormatter()
-        df.dateStyle = .medium
-        df.timeStyle = .medium
-        return df.string(from: date)
-    }
-}
-
-struct InfoRow: View {
-    let title: String
-    let value: String
-    let isDiff: Bool
-    var urlToOpen: URL? = nil
-    
-    var body: some View {
-        HStack(alignment: .top) {
-            Text(title).foregroundColor(.gray).frame(width: 75, alignment: .leading)
-            
-            if let targetUrl = urlToOpen {
-                Button(action: {
-                    NSWorkspace.shared.activateFileViewerSelecting([targetUrl.absoluteURL])
-                }) {
-                    Text(value)
-                        .foregroundColor(isDiff ? .red : .blue)
-                        .underline()
-                        .bold(isDiff)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .multilineTextAlignment(.leading)
-                }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                .onHover { inside in
-                    if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-                }
-            } else {
-                Text(value)
-                    .foregroundColor(isDiff ? .red : .primary)
-                    .bold(isDiff)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-    }
-}
-
-// MARK: - Komponenty Multimedialne
-
-struct AsyncThumbnail: View {
-    let url: URL
-    let size: CGSize
-    var isIcon: Bool = false
-    
-    @State private var image: NSImage?
-    
-    var body: some View {
-        Group {
-            if let img = image {
-                if isIcon {
-                    Image(nsImage: img).resizable().scaledToFill()
-                } else {
-                    Image(nsImage: img).resizable()
-                }
-            } else {
-                ProgressView().scaleEffect(0.5)
-            }
-        }
-        .onDisappear {
-            image = nil
-        }
-        .task(id: url) {
-            image = nil
-            
-            if !url.isVideo {
-                do { try await Task.sleep(nanoseconds: 150_000_000) } catch { return }
-                
-                let directImage = await Task.detached(priority: .background) { () -> NSImage? in
-                    if Task.isCancelled { return nil }
-                    
-                    // @autoreleasepool zapobiega wyciekom pamięci IOSurface
-                    return autoreleasepool {
-                        let maxPixelSize = isIcon ? 150 : 2048
-                        let options: [CFString: Any] = [
-                            kCGImageSourceCreateThumbnailFromImageAlways: true,
-                            kCGImageSourceCreateThumbnailWithTransform: true,
-                            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
-                        ]
-                        
-                        if let source = CGImageSourceCreateWithURL(url as CFURL, nil) {
-                            if Task.isCancelled { return nil }
-                            if let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                                return NSImage(cgImage: cgImage, size: .zero)
-                            }
-                        }
-                        
-                        // awaryjne wczytanie systemowej ikonki
-                        return NSWorkspace.shared.icon(forFile: url.path)
-                    }
-                }.value
-                
-                if let valid = directImage, !Task.isCancelled {
-                    await MainActor.run { self.image = valid }
-                }
-                return
-            }
-            
-            let scale = NSScreen.main?.backingScaleFactor ?? 2.0
-            let targetSize = isIcon ? size : CGSize(width: size.width * 2, height: size.height * 2)
-            let reqTypes: QLThumbnailGenerator.Request.RepresentationTypes = isIcon ? .thumbnail : .all
-            
-            let req = QLThumbnailGenerator.Request(fileAt: url, size: targetSize, scale: scale, representationTypes: reqTypes)
-            do {
-                let rep = try await QLThumbnailGenerator.shared.generateBestRepresentation(for: req)
-                if !Task.isCancelled { await MainActor.run { self.image = rep.nsImage } }
-            } catch {
-                if !Task.isCancelled { await MainActor.run { self.image = NSWorkspace.shared.icon(forFile: url.path) } }
-            }
-        }
-    }
-}
-
-struct FilePreview: View {
-    let url: URL
-    let previewMode: PreviewMode
-    let autoplay: Bool
-    let sound: Bool
-    var loop: Bool = false
-    var isFitted: Bool = false
-    var docPreviewMode: DocumentPreviewMode = .padded
-    
-    @State private var loadedImage: NSImage?
-    
-    var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                if url.isVideo {
-                    AutoVideoPlayer(url: url, autoplay: autoplay, sound: sound, loop: loop)
-                        .frame(width: geo.size.width, height: geo.size.height)
-                        .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
-                } else if url.isDocument {
-                    if docPreviewMode == .padded {
-                        DocumentPreview(url: url)
-                            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
-                            .padding(.horizontal, 150)
-                            .padding(.vertical, 40)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                    } else {
-                        DocumentPreview(url: url)
-                            .frame(width: geo.size.width, height: geo.size.height)
-                            .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
-                    }
-                } else {
-                    if let img = loadedImage {
-                        if isFitted {
-                            Image(nsImage: img).resizable().scaledToFit()
-                                .frame(width: geo.size.width, height: geo.size.height)
-                                .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
-                        } else {
-                            if previewMode == .fitWithBlur {
-                                ZStack {
-                                    Image(nsImage: img).resizable().scaledToFill()
-                                        .frame(width: geo.size.width, height: geo.size.height)
-                                        .blur(radius: 40).clipped()
-                                    
-                                    Image(nsImage: img).resizable().scaledToFit()
-                                        .frame(width: geo.size.width, height: geo.size.height)
-                                        .shadow(color: .black.opacity(0.6), radius: 15, x: 0, y: 5)
+            if mode == .files {
+                if manager.isLoading { Spacer(); ProgressView(tr("Wczytywanie plików…", "Loading files…")); Spacer() }
+                else {
+                    List(selection: $manager.selectedFiles) {
+                        ForEach(manager.displayFiles) { file in
+                            HStack(spacing: 10) {
+                                if thumbnails { FileThumbnail(file: file) } else { Image(systemName: file.kind.symbol).frame(width: 24).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(file.name).lineLimit(1)
+                                    HStack { Text(file.size.byteLabel); if manager.recursive { Text("· " + file.url.deletingLastPathComponent().lastPathComponent).lineLimit(1) } }.font(.caption2).foregroundStyle(.secondary)
                                 }
-                            } else if previewMode == .aspectFill {
-                                Image(nsImage: img).resizable().scaledToFill()
-                                    .frame(width: geo.size.width, height: geo.size.height)
-                                    .clipped()
-                            } else {
-                                Image(nsImage: img).resizable().scaledToFit()
-                                    .frame(width: geo.size.width, height: geo.size.height)
-                                    .shadow(color: .black.opacity(0.3), radius: 10, x: 0, y: 4)
-                            }
+                            }.padding(.vertical, 3).tag(file.url).help(file.url.path)
+                                .onDrag { NSItemProvider(object: file.url as NSURL) }
+                                .contextMenu {
+                                    Button(tr("Pokaż w Finderze", "Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([file.url]) }
+                                    Button(tr("Otwórz", "Open")) { NSWorkspace.shared.open(file.url) }
+                                    Button(tr("Skopiuj ścieżkę", "Copy path")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(file.url.path, forType: .string) }
+                                }
                         }
-                    } else {
-                        ProgressView()
+                    }.overlay {
+                        if manager.displayFiles.isEmpty { ContentUnavailableView(tr("Brak plików", "No files"), systemImage: "tray", description: Text(tr("Wybierz folder lub zmień filtry", "Choose a folder or adjust filters"))) }
                     }
                 }
-                
-                VStack {
+            } else if manager.isScanning {
+                Spacer(); ProgressView(); Text(manager.progress.stage).padding(.top, 8); Text("\(manager.progress.files) " + tr("plików", "files")).font(.caption).foregroundStyle(.secondary)
+                if manager.progress.total > 0 {
+                    ProgressView(value: Double(manager.progress.done), total: Double(manager.progress.total)).padding(.horizontal)
+                    Text("\(manager.progress.done.byteLabel) / \(manager.progress.total.byteLabel)").font(.caption)
+                }
+                Button(tr("Anuluj skanowanie", "Cancel scan")) { manager.cancelScan() }.padding(); Spacer()
+            } else {
+                List(selection: $manager.selectedGroupID) {
+                    ForEach(manager.duplicateGroups) { group in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(group.files.first?.name ?? "", systemImage: "doc.on.doc").lineLimit(1)
+                            Text("\(group.files.count) " + tr("kopie", "copies") + " · " + group.recoverable.byteLabel).font(.caption).foregroundStyle(.secondary)
+                        }.padding(.vertical, 4).tag(group.id)
+                    }
+                }.overlay { if manager.duplicateGroups.isEmpty { ContentUnavailableView(tr("Znajdź zbędne kopie", "Find redundant copies"), systemImage: "doc.on.doc", description: Text(tr("Uruchom skanowanie wybranego folderu", "Scan the selected folder"))) } }
+            }
+        }
+    }
+    @ViewBuilder private var previewArea: some View {
+        if mode == .duplicates {
+            if let group { DuplicateView(group: group).environmentObject(manager) }
+            else { welcome }
+        } else if manager.selectedFiles.count > 1 {
+            VStack(spacing: 18) {
+                Image(systemName: "square.stack.3d.up").font(.system(size: 60)).foregroundStyle(.tint)
+                Text(tr("Wybrano", "Selected") + " \(manager.selectedFiles.count) " + tr("plików", "files")).font(.title2)
+                Text(tr("Wybierz folder docelowy lub wykonaj operację z paska narzędzi", "Choose a destination or an action in the toolbar")).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button(tr("Porównaj dwa zdjęcia", "Compare two photos")) { showCompare = true }.disabled(!canCompare)
+            }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let file = manager.selectedEntry {
+            VStack(spacing: 0) {
+                HStack {
+                    Image(systemName: file.kind.symbol).foregroundStyle(.secondary)
+                    Text(file.name).font(.headline).lineLimit(1).help(file.url.path)
                     Spacer()
-                    MetadataOverlay(url: url)
-                }
+                    Button { NSWorkspace.shared.open(file.url) } label: { Image(systemName: "arrow.up.forward.app") }.help(tr("Otwórz w aplikacji", "Open in app"))
+                    Button { NSApp.keyWindow?.toggleFullScreen(nil) } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }.help(tr("Pełny ekran", "Full screen"))
+                    Button { showInfo.toggle() } label: { Image(systemName: showInfo ? "info.circle.fill" : "info.circle") }.help(tr("Informacje o pliku", "File information"))
+                }.buttonStyle(.borderless).padding(14)
+                Divider()
+                FilePreview(file: file).frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showInfo { metadata(file) }
             }
-        }
-        .onDisappear {
-            loadedImage = nil
-        }
-        .task(id: url) {
-            if url.isVideo || url.isDocument { return }
-            
-            loadedImage = nil
-            
-            do { try await Task.sleep(nanoseconds: 50_000_000) } catch { return }
-            
-            let fetchedImage = await Task.detached(priority: .userInitiated) { () -> NSImage? in
-                if Task.isCancelled { return nil }
-                
-                // Ponownie czyścimy VRAM po zrenderowaniu dużego podglądu
-                return autoreleasepool {
-                    let options: [CFString: Any] = [
-                        kCGImageSourceCreateThumbnailFromImageAlways: true,
-                        kCGImageSourceCreateThumbnailWithTransform: true,
-                        kCGImageSourceThumbnailMaxPixelSize: 2048
-                    ]
-                    
-                    if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                       let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
-                        return NSImage(cgImage: cgImage, size: .zero)
-                    }
-                    
-                    return NSWorkspace.shared.icon(forFile: url.path)
-                }
-            }.value
-            
-            if let validImage = fetchedImage, !Task.isCancelled {
-                await MainActor.run { self.loadedImage = validImage }
+        } else { welcome }
+    }
+    private var welcome: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "tray.2.fill").font(.system(size: 64)).foregroundStyle(.purple)
+            Text("SortFlow").font(.largeTitle.bold())
+            Text(tr("Mniej chaosu. Więcej miejsca.", "Less clutter. More room.")).font(.title3).foregroundStyle(.secondary)
+            Button(tr("Wybierz folder", "Choose folder")) { manager.chooseFolder() }.buttonStyle(.borderedProminent).controlSize(.large).disabled(!manager.canAct)
+            Text(tr("Możesz też przeciągnąć folder na okno", "You can also drop a folder onto this window")).font(.caption).foregroundStyle(.secondary)
+        }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    private var targetPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text(manager.transferMode.title + tr(" do", " to")).font(.headline)
+                Spacer()
+                Menu {
+                    ForEach(manager.workspaces) { ws in Button(ws.name) { manager.switchWorkspace(ws.id) } }
+                    Divider(); Button(tr("Nowy profil…", "New workspace…")) { newProfile = true }
+                    Button(tr("Usuń profil", "Delete workspace"), role: .destructive) { manager.deleteWorkspace() }.disabled(manager.workspaces.count < 2)
+                } label: { Label(manager.activeWorkspaceName, systemImage: "person.crop.rectangle") }.menuStyle(.borderlessButton).fixedSize()
             }
+            Picker(tr("Operacja", "Operation"), selection: $manager.transferMode) { ForEach(TransferMode.allCases, id: \.self) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
+            List {
+                ForEach(Array(manager.targets.enumerated()), id: \.element.id) { index, folder in
+                    let available = targetAvailability[folder.id] ?? false
+                    Button { manager.transferSelected(to: folder.url) } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: available ? "folder.fill" : "externaldrive.badge.exclamationmark").font(.title3).foregroundStyle(available ? Color(hex: folder.colorHex) : .secondary)
+                            VStack(alignment: .leading) {
+                                Text(folder.title).fontWeight(.medium).lineLimit(2)
+                                if !available { Text(tr("Folder niedostępny", "Folder unavailable")).font(.caption2).foregroundStyle(.secondary) }
+                            }
+                            Spacer()
+                            if index < 9 { Text("\(index + 1)").font(.caption.monospaced()).padding(5).background(.quaternary, in: RoundedRectangle(cornerRadius: 4)) }
+                        }.padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                    }.buttonStyle(.plain).disabled(!manager.canAct || manager.selectedFiles.isEmpty || !available)
+                        .listRowBackground(hoveringTarget == folder.id ? Color.accentColor.opacity(0.15) : Color.clear)
+                        .help(folder.url.path)
+                        .contextMenu {
+                            Button(tr("Nazwa i kolor…", "Name and color…")) { editedTarget = folder }
+                            Button(tr("Pokaż w Finderze", "Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([folder.url]) }
+                            Button(tr("Usuń z listy", "Remove from list"), role: .destructive) { manager.removeTarget(folder.id) }
+                        }
+                        .onDrop(of: [.fileURL], isTargeted: Binding(get: { hoveringTarget == folder.id }, set: { hoveringTarget = $0 ? folder.id : nil })) { providers in
+                            guard available, manager.canAct else { return false }
+                            loadDroppedURLs(providers) { manager.transferSelected(to: folder.url, external: $0) }; return true
+                        }
+                }.onMove { manager.moveTargets($0, $1) }
+            }.listStyle(.plain)
+            Button { manager.addTargets() } label: { Label(tr("Dodaj folder docelowy", "Add destination folder"), systemImage: "folder.badge.plus") }.buttonStyle(.borderless)
+            Divider()
+            Button { manager.deferSelected() } label: { Label(manager.deferredOnly ? tr("Przywróć do kolejki", "Return to queue") : tr("Do decyzji później", "Decide later"), systemImage: "clock.arrow.circlepath").frame(maxWidth: .infinity) }.disabled(manager.selectedFiles.isEmpty)
+            Button(role: .destructive) { manager.trashSelected() } label: { Label(tr("Do Kosza", "To Trash"), systemImage: "trash").frame(maxWidth: .infinity) }.buttonStyle(.bordered).tint(.red).disabled(manager.selectedFiles.isEmpty)
+            Text(tr("1–9: folder · ← →: nawigacja · L: później", "1–9: folder · ← →: navigate · L: later")).font(.caption2).foregroundStyle(.secondary)
+        }.padding(16).background(Color(nsColor: .controlBackgroundColor)).disabled(manager.isBusy || manager.isScanning)
+    }
+    @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        ToolbarItemGroup(placement: .navigation) {
+            Button { manager.chooseFolder() } label: { Label(tr("Otwórz folder", "Open folder"), systemImage: "folder") }.disabled(!manager.canAct)
+            Button { manager.loadFiles() } label: { Image(systemName: "arrow.clockwise") }.help(tr("Odśwież", "Refresh")).disabled(!manager.canAct)
+        }
+        ToolbarItem(placement: .principal) {
+            Picker("", selection: $mode) { Text(tr("Pliki", "Files")).tag(AppMode.files); Text(tr("Duplikaty", "Duplicates")).tag(AppMode.duplicates) }.pickerStyle(.segmented).frame(width: 190)
+        }
+        ToolbarItemGroup(placement: .automatic) {
+            if mode == .files {
+                TextField(tr("Szukaj pliku…", "Search files…"), text: $manager.searchText).textFieldStyle(.roundedBorder).frame(width: 160)
+                Menu { Picker(tr("Typ", "Type"), selection: $manager.filter) { ForEach(FileKind.allCases, id: \.self) { Text($0.title).tag($0) } } } label: { Image(systemName: "line.3.horizontal.decrease.circle") }
+                Menu { Picker(tr("Sortuj", "Sort"), selection: $manager.sort) { ForEach(SortOrder.allCases, id: \.self) { Text($0.title).tag($0) } } } label: { Image(systemName: "arrow.up.arrow.down") }
+                Button { showFilters.toggle() } label: { Image(systemName: "slider.horizontal.3") }.help(tr("Dodatkowe filtry", "More filters")).popover(isPresented: $showFilters) { filters }
+                Button { manager.showDeferred() } label: { Label("\(manager.deferred.count)", systemImage: manager.deferredOnly ? "clock.fill" : "clock") }.help(tr("Odłożone pliki", "Deferred files"))
+                Button { focused.toggle() } label: { Image(systemName: focused ? "rectangle.compress.vertical" : "viewfinder") }.help(tr("Tryb skupienia", "Focus mode"))
+            } else {
+                Toggle(tr("Podfoldery", "Subfolders"), isOn: $manager.recursive).toggleStyle(.checkbox).disabled(!manager.canAct)
+                Button { manager.findDuplicates() } label: { Label(tr("Skanuj", "Scan"), systemImage: "magnifyingglass") }.disabled(!manager.canAct || manager.currentFolder == nil)
+            }
+            Toggle(isOn: $lowMemory) { Image(systemName: lowMemory ? "leaf.fill" : "leaf") }.toggleStyle(.button).help(tr("Tryb oszczędny RAM", "Low memory mode"))
+            Menu {
+                Button(tr("Reguły segregowania…", "Sorting rules…")) { showRules = true }
+                Button(tr("Podgląd zastosowania reguł…", "Preview rule actions…")) { planned = manager.rulePlan(); showPlan = true }.disabled(!manager.canAct)
+                Button(tr("Zmień nazwy zaznaczonych…", "Rename selected…")) { showRename = true }.disabled(manager.selectedFiles.isEmpty || !manager.canAct)
+                Button(tr("Porównaj dwa zdjęcia…", "Compare two photos…")) { showCompare = true }.disabled(!canCompare)
+                Divider()
+                Button(tr("Historia operacji…", "Operation history…")) { showHistory = true }
+                Button(tr("Podsumowanie sesji…", "Session summary…")) { showSummary = true }
+                Button(tr("Raport błędów…", "Error report…")) { showReport = true }
+                SettingsLink { Text(tr("Ustawienia…", "Settings…")) }
+            } label: { Image(systemName: "ellipsis.circle") }
         }
     }
-}
-
-struct MetadataOverlay: View {
-    let url: URL
-    @State private var info = ""
-    
-    var body: some View {
-        Text(info)
-            .font(.caption).fontWeight(.medium).foregroundColor(.white)
-            .padding(.horizontal, 12).padding(.vertical, 6)
-            .background(Capsule().fill(Color.black.opacity(0.6)))
-            .padding(.bottom, 24)
-            .task(id: url) {
-                // OPÓŹNIENIE ZWIĘKSZONE DO 0.25s:
-                // Pozwala podglądowi załadować się pierwszemu bez rywalizacji o dysk
-                do { try await Task.sleep(nanoseconds: 250_000_000) } catch { return }
-                
-                // ZMIANA PRIORYTETU NA .utility
-                let detailsStr = await Task.detached(priority: .utility) {
-                    if Task.isCancelled { return "" }
-                    
-                    var details: [String] = []
-                    if let attr = try? FileManager.default.attributesOfItem(atPath: url.path),
-                       let size = attr[.size] as? Int64 { details.append(String(format: "%.1f MB", Double(size) / 1048576)) }
-                    
-                    if let res = try? url.resourceValues(forKeys: [.creationDateKey]), let date = res.creationDate {
-                        let df = DateFormatter(); df.dateStyle = .medium; df.timeStyle = .short
-                        details.append(df.string(from: date))
-                    }
-                    
-                    if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-                       let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
-                       let w = props["PixelWidth"] as? Int, let h = props["PixelHeight"] as? Int {
-                        details.append("\(w)x\(h)")
-                    }
-                    return details.joined(separator: " • ")
-                }.value
-                
-                if !Task.isCancelled, !detailsStr.isEmpty {
-                    await MainActor.run { self.info = detailsStr }
-                }
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            if manager.isBusy {
+                ProgressView(value: Double(manager.operationDone), total: Double(max(1, manager.operationTotal))).frame(width: 100)
+                Text("\(manager.operationDone)/\(manager.operationTotal)").monospacedDigit()
+                Button(tr("Anuluj pozostałe", "Cancel remaining")) { manager.cancelOperation() }
+            } else {
+                Text(manager.notice.isEmpty ? tr("Gotowe do pracy", "Ready") : manager.notice).lineLimit(1)
+                if !manager.history.isEmpty { Button(tr("Cofnij", "Undo")) { manager.undo() }.disabled(!manager.canAct) }
             }
+            Spacer()
+            if !manager.errors.isEmpty { Button { showReport = true } label: { Label("\(manager.errors.count)", systemImage: "exclamationmark.triangle") }.foregroundStyle(.orange) }
+            if mode == .duplicates { Text(tr("Zbędne kopie: ", "Redundant copies: ") + manager.recoverable.byteLabel) }
+            else {
+                Text("\(manager.stats.moved + manager.stats.copied + manager.stats.trashed) " + tr("uporządkowano", "organized"))
+                if !manager.displayFiles.isEmpty, let index = manager.displayFiles.firstIndex(where: { manager.selectedFiles.contains($0.url) }) { Text("\(index + 1)/\(manager.displayFiles.count)").monospacedDigit() }
+            }
+        }.font(.caption).padding(.horizontal, 16).padding(.vertical, 10).background(.bar)
     }
-}
-
-struct NativeVideoPlayer: NSViewRepresentable {
-    let player: AVPlayer?
-    
-    func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
-        view.controlsStyle = .inline
-        view.videoGravity = .resizeAspect
-        view.player = player
-        return view
+    private var filters: some View {
+        Form {
+            Toggle(tr("Uwzględnij podfoldery", "Include subfolders"), isOn: $manager.recursive).disabled(!manager.canAct)
+            TextField(tr("Minimum MB", "Minimum MB"), value: $manager.minSizeMB, format: .number)
+            TextField(tr("Maksimum MB (0 = bez limitu)", "Maximum MB (0 = unlimited)"), value: $manager.maxSizeMB, format: .number)
+            Toggle(tr("Filtruj po dacie modyfikacji", "Filter by modification date"), isOn: $manager.dateFilterEnabled)
+            if manager.dateFilterEnabled { DatePicker(tr("Od", "Since"), selection: $manager.modifiedAfter, displayedComponents: .date) }
+        }.padding(20).frame(width: 320)
     }
-    
-    func updateNSView(_ nsView: AVPlayerView, context: Context) {
-        if nsView.player != player {
-            nsView.player = player
-        }
-    }
-}
-
-struct AutoVideoPlayer: View {
-    let url: URL
-    let autoplay: Bool
-    let sound: Bool
-    var loop: Bool = false
-    
-    @State private var player: AVPlayer?
-    @State private var ratio: CGFloat = 16/9
-    @State private var isReady = false
-    
-    var body: some View {
-        ZStack {
-            Color.clear
-                .aspectRatio(ratio, contentMode: .fit)
-                .shadow(color: isReady ? .black.opacity(0.4) : .clear, radius: 8)
-                .overlay(
-                    NativeVideoPlayer(player: player)
-                        .opacity(isReady ? 1 : 0)
-                )
-            
-            if !isReady {
-                ProgressView()
-            }
-        }
-        .task(id: url) {
-            isReady = false
-            player?.pause()
-            player?.replaceCurrentItem(with: nil)
-            player = nil
-            
-            do { try await Task.sleep(nanoseconds: 150_000_000) } catch { return }
-            
-            let asset = AVURLAsset(url: url)
-            var newRatio: CGFloat = 16/9
-            
-            if let track = try? await asset.loadTracks(withMediaType: .video).first,
-               let size = try? await track.load(.naturalSize),
-               let transform = try? await track.load(.preferredTransform) {
-                
-                let realSize = size.applying(transform)
-                if realSize.height > 0 {
-                    newRatio = abs(realSize.width / realSize.height)
-                }
-            }
-            
-            if Task.isCancelled { return }
-            
-            let newItem = AVPlayerItem(asset: asset)
-            let newPlayer = AVPlayer(playerItem: newItem)
-            newPlayer.isMuted = !sound
-            
-            await MainActor.run {
-                self.ratio = newRatio
-                self.player = newPlayer
-                self.isReady = true
-                if autoplay { self.player?.play() }
-            }
-        }
-        .onChange(of: sound) { _, newSound in player?.isMuted = !newSound }
-        .onDisappear {
-            player?.pause()
-            player?.replaceCurrentItem(with: nil)
-            player = nil
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notification in
-            if loop, let item = notification.object as? AVPlayerItem, item == player?.currentItem {
-                player?.seek(to: .zero)
-                player?.play()
-            }
-        }
-    }
-}
-
-// MARK: - Moduł Rozwiązywania Konfliktów
-
-struct ConflictResolutionView: View {
-    let conflict: FileConflict
-    @ObservedObject var manager: FolderManager
-    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
-
-    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
-
-    @State private var sourceMeta: FileMetadataModel?
-    @State private var destMeta: FileMetadataModel?
-
-    var body: some View {
-        VStack(spacing: 20) {
-            Text(t("Konflikt plików", "File Conflict"))
-                .font(.title2).bold()
-
-            Text(t("Plik o nazwie \"\(conflict.source.lastPathComponent)\" już istnieje w folderze docelowym.", "A file named \"\(conflict.source.lastPathComponent)\" already exists in the destination."))
-                .multilineTextAlignment(.center)
-                .padding(.horizontal)
-
-            HStack(spacing: 20) {
-                VStack(alignment: .leading) {
-                    Text(t("Przenoszony plik:", "Moving file:")).font(.headline)
-                    if let meta = sourceMeta {
-                        MetaCard(meta: meta)
-                    } else {
-                        ProgressView()
-                    }
-                }
-
-                VStack(alignment: .leading) {
-                    Text(t("Plik docelowy:", "Destination file:")).font(.headline)
-                    if let meta = destMeta {
-                        MetaCard(meta: meta)
-                    } else {
-                        ProgressView()
-                    }
-                }
-            }
-
-            HStack(spacing: 16) {
-                Button(t("Zastąp", "Replace")) { manager.resolveConflict(action: .replace) }
-                    .buttonStyle(.borderedProminent).tint(.red)
-                Button(t("Zachowaj oba", "Keep both")) { manager.resolveConflict(action: .keepBoth) }
-                    .buttonStyle(.borderedProminent).tint(.blue)
-                Button(t("Pomiń", "Skip")) { manager.resolveConflict(action: .skip) }
-                    .buttonStyle(.bordered)
-            }
-            .padding(.top, 8)
-        }
-        .padding(24)
-        .frame(width: 500)
-        .onAppear {
-            sourceMeta = getMeta(url: conflict.source)
-            destMeta = getMeta(url: conflict.destination)
-        }
-    }
-
-    private func getMeta(url: URL) -> FileMetadataModel {
-        let attr = try? FileManager.default.attributesOfItem(atPath: url.path)
-        let res = try? url.resourceValues(forKeys: [.creationDateKey])
-        return FileMetadataModel(
-            url: url,
-            name: url.lastPathComponent,
-            path: url.path,
-            size: (attr?[.size] as? Int64) ?? 0,
-            creationDate: res?.creationDate,
-            modDate: attr?[.modificationDate] as? Date
-        )
-    }
-}
-
-struct MetaCard: View {
-    let meta: FileMetadataModel
-    @AppStorage("appLanguage") private var appLanguage: AppLanguage = .pl
-    private func t(_ pl: String, _ en: String) -> String { appLanguage == .pl ? pl : en }
-
-    var body: some View {
+    private func metadata(_ file: FileEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(t("Rozmiar:", "Size:")) \(formatSize(meta.size))")
-            Text("\(t("Utworzono:", "Created:")) \(formatDate(meta.creationDate))")
-            Text("\(t("Zmieniono:", "Modified:")) \(formatDate(meta.modDate))")
-        }
-        .font(.system(size: 12))
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(NSColor.controlBackgroundColor))
-        .cornerRadius(8)
+            Divider()
+            HStack { Text(file.kind.title); Spacer(); Text(file.size.byteLabel) }.font(.caption.bold())
+            Text(tr("Utworzono: ", "Created: ") + file.created.formatted(date: .abbreviated, time: .shortened)).font(.caption)
+            Text(tr("Zmieniono: ", "Modified: ") + file.modified.formatted(date: .abbreviated, time: .shortened)).font(.caption)
+            Text(file.url.path).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+        }.padding(12)
     }
-
-    private func formatSize(_ bytes: Int64) -> String {
-        String(format: "%.2f MB", Double(bytes) / 1048576)
+    private var reportView: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(tr("Raport błędów i pominiętych plików", "Errors and skipped files")).font(.title2.bold())
+            Text(tr("Raport zawiera maksymalnie 1000 wpisów na skan. Niepełny skan nie potwierdza braku duplikatów.", "The report contains up to 1000 entries per scan. An incomplete scan cannot confirm that no duplicates exist.")).font(.caption).foregroundStyle(.secondary)
+            ScrollView { Text(manager.errors.isEmpty ? tr("Brak błędów", "No errors") : manager.errors.joined(separator: "\n\n")).frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled) }
+            HStack { Button(tr("Skopiuj raport", "Copy report")) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(manager.errors.joined(separator: "\n"), forType: .string) }; Spacer(); Button(tr("Zamknij", "Close")) { showReport = false } }
+        }.padding(24).frame(width: 640, height: 450)
     }
-
-    private func formatDate(_ date: Date?) -> String {
-        guard let date = date else { return t("Brak", "N/A") }
-        let df = DateFormatter()
-        df.dateStyle = .medium
-        df.timeStyle = .short
-        return df.string(from: date)
+    private var summaryView: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(tr("Podsumowanie sesji", "Session summary")).font(.title.bold())
+            LabeledContent(tr("Przeniesiono", "Moved"), value: "\(manager.stats.moved)")
+            LabeledContent(tr("Skopiowano", "Copied"), value: "\(manager.stats.copied)")
+            LabeledContent(tr("Do Kosza", "Trashed"), value: "\(manager.stats.trashed) · \(manager.stats.bytes.byteLabel)")
+            Text(tr("Miejsce odzyskasz po opróżnieniu Kosza. Klony APFS mogą współdzielić dane.", "Space is reclaimed after emptying Trash. APFS clones may share storage.")).font(.caption).foregroundStyle(.secondary)
+            List(manager.stats.destinations.keys.sorted(), id: \.self) { key in LabeledContent(key, value: "\(manager.stats.destinations[key] ?? 0)") }.frame(height: 160)
+            Text(tr("Liczniki obejmują wykonane operacje; cofnięcia nie zmniejszają liczników.", "Counters include completed operations; undo does not reduce them.")).font(.caption2).foregroundStyle(.secondary)
+            HStack { Spacer(); Button(tr("Zamknij", "Close")) { showSummary = false } }
+        }.padding(24).frame(width: 550)
+    }
+    private var canCompare: Bool { let chosen = manager.files.filter { manager.selectedFiles.contains($0.url) }; return chosen.count == 2 && chosen.allSatisfy { $0.kind == .image || $0.kind == .raw } }
+    private func ensureSelection() { if manager.selectedFiles.isEmpty, let first = manager.displayFiles.first { manager.selectedFiles = [first.url] } }
+    private func handleKey(_ key: String) -> Bool {
+        guard manager.canAct, mode == .files else { return false }
+        if let number = Int(key), number >= 1, number <= min(9, manager.targets.count) { manager.transferSelected(to: manager.targets[number - 1].url); return true }
+        switch key {
+        case "left": manager.navigate(-1)
+        case "right": manager.navigate(1)
+        case "l": manager.deferSelected()
+        case "f": focused.toggle()
+        default: return false
+        }; return true
+    }
+    private func refreshTargets() async {
+        let folders = manager.targets
+        let result = await Task.detached { Dictionary(uniqueKeysWithValues: folders.map { ($0.id, (try? $0.url.checkResourceIsReachable()) ?? false) }) }.value
+        if !Task.isCancelled { targetAvailability = result }
     }
 }
 
-struct DocumentPreview: NSViewRepresentable {
-    let url: URL
-    
-    func makeNSView(context: Context) -> QLPreviewView {
-        let view = QLPreviewView()
-        view.autostarts = true
-        return view
-    }
-    
-    func updateNSView(_ nsView: QLPreviewView, context: Context) {
-        if nsView.previewItem as? URL != url {
-            nsView.previewItem = url as QLPreviewItem
+@MainActor
+private func loadDroppedURLs(_ providers: [NSItemProvider], completion: @escaping ([URL]) -> Void) {
+    // Zbieramy całą partię przed startem, zamiast uruchamiać konkurujące przeniesienia.
+    Task {
+        var urls: [URL] = []
+        for provider in providers {
+            let url: URL? = await withCheckedContinuation { continuation in
+                _ = provider.loadObject(ofClass: URL.self) { value, _ in continuation.resume(returning: value) }
+            }
+            if let url { urls.append(url) }
         }
+        completion(urls)
     }
 }
-
-#Preview {
-    ContentView()
+struct KeyboardBridge: NSViewRepresentable {
+    var action: (String) -> Bool
+    func makeCoordinator() -> Coordinator { Coordinator(action: action) }
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ view: NSView, context: Context) { context.coordinator.action = action }
+    class Coordinator {
+        var action: (String) -> Bool
+        var monitor: Any?
+        init(action: @escaping (String) -> Bool) {
+            self.action = action
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self, NSApp.keyWindow?.identifier?.rawValue != "com.apple.SwiftUI.Settings", NSApp.keyWindow?.sheetParent == nil,
+                      !(NSApp.keyWindow?.firstResponder is NSTextView), NSApp.modalWindow == nil,
+                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+                let key = event.keyCode == 123 ? "left" : event.keyCode == 124 ? "right" : event.charactersIgnoringModifiers?.lowercased() ?? ""
+                return self.action(key) ? nil : event
+            }
+        }
+        deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
+    }
 }

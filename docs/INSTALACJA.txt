@@ -1,0 +1,24 @@
+SortFlow 2.0 — macOS 14 lub nowszy, Apple Silicon i Intel
+
+1. Otwórz SortFlow-2.0.dmg.
+2. Przeciągnij SortFlow.app do folderu Applications (Aplikacje).
+3. Uruchom SortFlow z folderu Aplikacje.
+
+Ten build ma podpis ad-hoc; nie ma certyfikatu Developer ID ani notaryzacji Apple.
+Przy pierwszym uruchomieniu macOS może zablokować aplikację pobraną z internetu.
+Jeżeli tak się stanie, otwórz Ustawienia systemowe > Prywatność i ochrona
+oraz użyj opcji Otwórz mimo to dla SortFlow. Nie wyłączaj ochrony globalnie.
+Jeżeli polityka komputera blokuje takie aplikacje, potrzebny będzie build
+podpisany certyfikatem Developer ID i notaryzowany przez właściciela projektu.
+
+Skróty: 1–9 folder docelowy, strzałki nawigacja, L odłóż, F skupienie,
+Cmd+Z cofnij, Cmd+O folder, Cmd+, ustawienia.
+Skróty literowe i cyfrowe nie działają podczas wpisywania tekstu ani w oknach dialogowych.
+
+Tryb oszczędny jest domyślnie włączony. Ogranicza zdjęcia do 1024 px,
+miniatury do 60 px, wyłącza autoplay i blur. Odtwarzanie nadal można włączyć ręcznie.
+Rozmiar cache miniatur nie jest limitem pamięci całego programu.
+
+Historia i kopie zastąpionych plików: ~/Library/Application Support/SortFlow/
+Kopie zapasowe pozostają na dysku, aby umożliwić cofnięcie operacji.
+Do Kosza nie oznacza natychmiastowego odzyskania miejsca.
