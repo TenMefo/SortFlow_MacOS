@@ -3,6 +3,7 @@ import Foundation
 @main
 struct CoreTests {
     static func main() throws {
+        setbuf(stdout, nil)
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("SortFlowTests-\(UUID().uuidString)")
         try fm.createDirectory(at: root, withIntermediateDirectories: true)

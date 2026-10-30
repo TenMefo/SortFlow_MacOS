@@ -54,7 +54,7 @@ enum ScanService {
         }) else { throw CocoaError(.fileReadNoPermission) }
         for case let url as URL in enumerator {
             try flag.check()
-            try autoreleasepool {
+            autoreleasepool {
                 let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey])
                 if values?.isDirectory == true || values?.isSymbolicLink == true { return }
                 do { entries.append(try FileEntry.read(url)) }
@@ -77,7 +77,7 @@ enum ScanService {
         try index.execute("BEGIN")
         for case let url as URL in enumerator {
             try flag.check()
-            try autoreleasepool {
+            autoreleasepool {
                 let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
                 if values?.isDirectory == true || values?.isSymbolicLink == true { return }
                 do { try index.insert(FileEntry.read(url)); status.files += 1 }

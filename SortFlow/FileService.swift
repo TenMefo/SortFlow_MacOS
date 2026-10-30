@@ -84,7 +84,8 @@ enum FileService {
     }
     static func linkedFiles(_ urls: [URL]) -> [URL] {
         let fm = FileManager.default
-        var results = Set(urls)
+        var results: [String: URL] = [:]
+        for url in urls { results[url.standardizedFileURL.resolvingSymlinksInPath().path] = url }
         let families = [Set(["jpg", "jpeg", "heic", "cr2", "cr3", "nef", "arw", "dng", "raw", "orf", "raf", "rw2", "xmp", "aae"]),
                         Set(["mp4", "mov", "mkv", "avi", "m4v", "srt", "vtt", "ass"])]
         for url in urls {
@@ -92,10 +93,10 @@ enum FileService {
             let stem = url.deletingPathExtension().lastPathComponent
             let siblings = (try? fm.contentsOfDirectory(at: url.deletingLastPathComponent(), includingPropertiesForKeys: nil)) ?? []
             for sibling in siblings where sibling.deletingPathExtension().lastPathComponent == stem && family.contains(sibling.pathExtension.lowercased()) {
-                if (try? FileEntry.read(sibling)) != nil { results.insert(sibling) }
+                if (try? FileEntry.read(sibling)) != nil { results[sibling.standardizedFileURL.resolvingSymlinksInPath().path] = results[sibling.standardizedFileURL.resolvingSymlinksInPath().path] ?? sibling }
             }
         }
-        return results.sorted { $0.path < $1.path }
+        return results.values.sorted { $0.path < $1.path }
     }
     static func transfer(_ plan: PlannedTransfer, mode: TransferMode, choice: ConflictChoice, backupRoot: URL) throws -> UndoItem? {
         let fm = FileManager.default
@@ -154,15 +155,17 @@ enum FileService {
         if let backup = item.backup {
             guard fm.fileExists(atPath: backup.path) else { throw CocoaError(.fileNoSuchFile) }
         }
+        var trashedCopy: UndoItem?
         if item.copied {
             // Kosz zamiast trwałego kasowania kopii, którą użytkownik mógł już edytować.
-            _ = try trash(item.current)
+            trashedCopy = try trash(item.current)
         } else { try fm.moveItem(at: item.current, to: item.original) }
         if let backup = item.backup {
             do { try fm.moveItem(at: backup, to: item.current) }
             catch {
                 // Przywróć stan sprzed próby cofnięcia, o ile jest to możliwe.
                 if !item.copied { try? fm.moveItem(at: item.original, to: item.current) }
+                else if let trashedCopy { try? fm.moveItem(at: trashedCopy.current, to: item.current) }
                 throw error
             }
         }

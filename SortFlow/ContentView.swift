@@ -48,13 +48,13 @@ struct ContentView: View {
             guard let provider = providers.first, manager.canAct else { return false }
             _ = provider.loadObject(ofClass: URL.self) { url, _ in if let url { Task { @MainActor in manager.openFolder(url) } } }; return true
         }
-        .sheet(item: $manager.activeConflict, onDismiss: { manager.resolveConflict(.skip) }) { conflict in ConflictView(conflict: conflict).environmentObject(manager).interactiveDismissDisabled() }
+        .sheet(item: $manager.activeConflict) { conflict in ConflictView(conflict: conflict).environmentObject(manager).interactiveDismissDisabled() }
         .sheet(item: $editedTarget) { folder in TargetEditor(folder: folder) { manager.updateTarget($0) } }
         .sheet(isPresented: $showHistory) { HistoryView().environmentObject(manager) }
         .sheet(isPresented: $showReport) { reportView }
         .sheet(isPresented: $showSummary) { summaryView }
         .sheet(isPresented: $showRules) { RulesView().environmentObject(manager) }
-        .sheet(isPresented: $showRename) { RenameView(files: manager.displayFiles.filter { manager.selectedFiles.contains($0.url) }) { plan in planned = plan; showPlan = true } }
+        .sheet(isPresented: $showRename) { RenameView(files: manager.displayFiles.filter { manager.selectedFiles.contains($0.url) }) { plan in manager.runTransfers(plan, mode: .move) } }
         .sheet(isPresented: $showPlan) { TransferPlanView(plans: planned, mode: manager.transferMode) { manager.runTransfers(planned, mode: manager.transferMode) } }
         .sheet(isPresented: $showCompare) { CompareImagesView(files: manager.displayFiles.filter { manager.selectedFiles.contains($0.url) }) }
         .alert(tr("Nowy profil", "New workspace"), isPresented: $newProfile) {
@@ -63,7 +63,7 @@ struct ContentView: View {
             Button(tr("Anuluj", "Cancel"), role: .cancel) { profileName = "" }
         }
         .task(id: manager.targets) { await refreshTargets() }
-        .onReceive(NotificationCenter.default.publisher(for: NSWorkspace.didMountNotification, object: nil)) { _ in Task { await refreshTargets() } }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in Task { await refreshTargets() } }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in Task { await refreshTargets() } }
     }
     private var sidebar: some View {
@@ -293,7 +293,7 @@ struct ContentView: View {
         }.padding(24).frame(width: 550)
     }
     private var canCompare: Bool { let chosen = manager.files.filter { manager.selectedFiles.contains($0.url) }; return chosen.count == 2 && chosen.allSatisfy { $0.kind == .image || $0.kind == .raw } }
-    private func ensureSelection() { if manager.selectedFiles.isEmpty, let first = manager.displayFiles.first { manager.selectedFiles = [first.url] } }
+    private func ensureSelection() { let visible = Set(manager.displayFiles.map(\.url)); let selection = manager.selectedFiles.intersection(visible); if selection.isEmpty, let first = manager.displayFiles.first { manager.selectedFiles = [first.url] } else if selection != manager.selectedFiles { manager.selectedFiles = selection } }
     private func handleKey(_ key: String) -> Bool {
         guard manager.canAct, mode == .files else { return false }
         if let number = Int(key), number >= 1, number <= min(9, manager.targets.count) { manager.transferSelected(to: manager.targets[number - 1].url); return true }
