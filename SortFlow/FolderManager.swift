@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import Combine
+import SwiftUI
 
 @MainActor
 final class FolderManager: ObservableObject {

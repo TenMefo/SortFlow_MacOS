@@ -97,7 +97,7 @@ struct FileThumbnail: View {
             if let image { Image(decorative: image, scale: 1).resizable().scaledToFill() }
             else { Image(systemName: file.kind.symbol).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity) }
         }.frame(width: 30, height: 30).clipped().clipShape(RoundedRectangle(cornerRadius: 5))
-            .task(id: file) {
+            .task(id: "\(file.url.path)|\(file.modified)|\(lowMemory)") {
                 image = nil
                 do { try await Task.sleep(nanoseconds: 100_000_000) } catch { return }
                 let value = await ImagePipeline.shared.load(file.url, pixels: lowMemory ? 60 : 90, thumbnail: true)
@@ -281,7 +281,7 @@ struct WaveformView: View {
             }, onCancel: { flag.cancel() })
         }
     }
-    private func readWave(_ url: URL, flag: CancellationFlag) throws -> [Float] {
+    nonisolated private func readWave(_ url: URL, flag: CancellationFlag) throws -> [Float] {
         let file = try AVAudioFile(forReading: url)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 8192) else { throw CocoaError(.fileReadUnknown) }
         var peaks = [Float](repeating: 0, count: 400)
