@@ -49,6 +49,7 @@ final class FolderManager: ObservableObject {
     private var cachedChoice: ConflictChoice?
     private var historyLimit = 100
     private var searchWork: Task<Void, Never>?
+    private var searchFlag = CancellationFlag()
     let support: URL
     var backupRoot: URL { support.appendingPathComponent("Backups", isDirectory: true) }
     var canAct: Bool { !isBusy && !isLoading && !isScanning }
@@ -145,7 +146,7 @@ final class FolderManager: ObservableObject {
     }
     private func rebuild() {
         guard !restoring else { return }
-        searchWork?.cancel()
+        searchWork?.cancel(); searchFlag.cancel(); searchFlag = CancellationFlag(); let flag = searchFlag
         // Dane są już w pamięci: filtrowanie nie wykonuje żadnych odczytów dysku.
         let input = files, query = searchText, kind = filter, order = sort, deferredSet = deferred, completedSet = completed
         let onlyDeferred = deferredOnly, minimum = minSizeMB, maximum = maxSizeMB, after = modifiedAfter, useDate = dateFilterEnabled
@@ -154,7 +155,7 @@ final class FolderManager: ObservableObject {
             guard !Task.isCancelled else { return }
             let result = await Task.detached(priority: .userInitiated) {
                 input.filter { file in
-                    !completedSet.contains(file.url) && (onlyDeferred ? deferredSet.contains(file.url) : !deferredSet.contains(file.url)) &&
+                    !flag.isCancelled && !completedSet.contains(file.url) && (onlyDeferred ? deferredSet.contains(file.url) : !deferredSet.contains(file.url)) &&
                     (kind == .all || file.kind == kind) && (query.isEmpty || file.name.localizedCaseInsensitiveContains(query)) &&
                     (minimum <= 0 || Double(file.size) >= minimum * 1_000_000) && (maximum <= 0 || Double(file.size) <= maximum * 1_000_000) &&
                     (!useDate || file.modified >= after)

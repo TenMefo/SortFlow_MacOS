@@ -3,8 +3,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build dist
 swiftc -swift-version 5 SortFlow/Models.swift SortFlow/FileService.swift SortFlow/ScanService.swift Tests/CoreTests.swift -lsqlite3 -o build/core-tests
-build/core-tests | tee build/core-tests.log
 xcodebuild -project SortFlow.xcodeproj -scheme SortFlow -configuration Release -destination 'generic/platform=macOS' -derivedDataPath build/Derived CODE_SIGNING_ALLOWED=NO ARCHS='arm64 x86_64' ONLY_ACTIVE_ARCH=NO MACOSX_DEPLOYMENT_TARGET=14.0 build > build/xcodebuild.log 2>&1 || { tail -200 build/xcodebuild.log; exit 1; }
+build/core-tests | tee build/core-tests.log
 APP='build/Derived/Build/Products/Release/SortFlow.app'
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep --strict "$APP"

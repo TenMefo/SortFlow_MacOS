@@ -62,7 +62,9 @@ struct CoreTests {
         let image = try write("photo.JPG", "image", in: source)
         let raw = try write("photo.NEF", "raw", in: source)
         _ = try write("photo.xmp", "metadata", in: source)
-        try check(FileService.linkedFiles([image]).count == 3 && FileService.linkedFiles([raw]).contains(image), "Linked companions include uppercase extensions")
+        let linkedImage = FileService.linkedFiles([image]), linkedRaw = FileService.linkedFiles([raw])
+        print("Companion paths:", linkedImage.map(\.path), linkedRaw.map(\.path))
+        try check(linkedImage.count == 3 && linkedRaw.contains(where: { FileService.sameFile($0, image) }), "Linked companions include uppercase extensions")
         let plan = FileService.renamePlan([image], prefix: "test_", start: 7, includeDate: false)
         try check(plan[0].destination.lastPathComponent == "test_0007.JPG", "Rename preserves extension")
         // Starsze profile (1.x) nie mają nowych kluczy: muszą nadal się dekodować.
