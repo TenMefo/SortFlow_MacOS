@@ -361,9 +361,9 @@ final class FolderManager: ObservableObject {
     func undo(_ record: HistoryRecord? = nil) {
         guard canAct, let record = record ?? history.first else { return }
         isBusy = true; errors = []; operationFlag = CancellationFlag(); let flag = operationFlag
-        let directory = historyDirectory
+        let directory = historyDirectory, recordID = record.id
         Task {
-            let loaded = await Task.detached { Result { try HistoryStore.load(record.id, directory: directory) } }.value
+            let loaded = await Task.detached { Result { try HistoryStore.load(recordID, directory: directory) } }.value
             let full: HistoryRecord
             switch loaded {
             case .success(let value): full = value

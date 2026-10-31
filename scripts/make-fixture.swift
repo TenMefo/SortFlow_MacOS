@@ -17,3 +17,7 @@ CGImageDestinationAddImage(destination, context.makeImage()!, [kCGImageDestinati
 guard CGImageDestinationFinalize(destination) else { fatalError("Fixture generation failed") }
 for index in 2...24 { try FileManager.default.copyItem(at: first, to: folder.appendingPathComponent(String(format: "photo_%02d.jpg", index))) }
 try "SortFlow 2.0 — test podglądu dokumentu".write(to: folder.appendingPathComponent("Przyklad.txt"), atomically: true, encoding: .utf8)
+
+for name in ["Do montażu", "Archiwum", "Do sprawdzenia"] {
+    try FileManager.default.createDirectory(at: folder.appendingPathComponent(name), withIntermediateDirectories: true)
+}

@@ -61,7 +61,10 @@ private enum SmokeHarness {
     }
     static func start(_ manager: FolderManager) {
         guard active, !started else { return }; started = true; log("UI_APPEARED")
-        if let index = CommandLine.arguments.firstIndex(of: "--fixture"), CommandLine.arguments.indices.contains(index + 1) { manager.openFolder(URL(fileURLWithPath: CommandLine.arguments[index + 1])) }
+        if let index = CommandLine.arguments.firstIndex(of: "--fixture"), CommandLine.arguments.indices.contains(index + 1) {
+            let source = URL(fileURLWithPath: CommandLine.arguments[index + 1]); manager.openFolder(source)
+            manager.targets = [MappedFolder(url: source.appendingPathComponent("Do montażu"), colorHex: "#8A2BE2"), MappedFolder(url: source.appendingPathComponent("Archiwum"), colorHex: "#007AFF"), MappedFolder(url: source.appendingPathComponent("Do sprawdzenia"), colorHex: "#FF9500")]
+        }
         Task { @MainActor in
             for _ in 0..<100 {
                 if !manager.isLoading && !manager.files.isEmpty { break }
@@ -69,6 +72,8 @@ private enum SmokeHarness {
             }
             guard !manager.files.isEmpty else { log("SMOKE_NO_FILES"); Darwin.exit(3) }
             let images = manager.files.filter { $0.kind == .image }
+            if let first = images.first { manager.selectedFiles = [first.url] }
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
             for _ in 0..<2 {
                 for file in images { manager.selectedFiles = [file.url]; try? await Task.sleep(nanoseconds: 140_000_000) }
             }

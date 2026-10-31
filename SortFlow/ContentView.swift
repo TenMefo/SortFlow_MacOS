@@ -40,7 +40,7 @@ struct ContentView: View {
         .toolbar { toolbar }
         .safeAreaInset(edge: .bottom, spacing: 0) { statusBar }
         .background(KeyboardBridge { handleKey($0) }.frame(width: 0, height: 0))
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 900, minHeight: 520)
         .onChange(of: focused) { _, value in columns = value ? .detailOnly : .all }
         .onChange(of: mode) { _, _ in focused = false }
         .onChange(of: manager.filter) { _, _ in ensureSelection() }
