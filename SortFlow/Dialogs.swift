@@ -151,7 +151,7 @@ struct RenameView: View {
     @State private var prefix = "plik_"
     @State private var start = 1
     @State private var withDate = false
-    private var plan: [PlannedTransfer] { FileService.renamePlan(files.map(\.url), prefix: prefix, start: max(0, start), includeDate: withDate) }
+    private var plan: [PlannedTransfer] { FileService.renamePlan(files.map(\.url), prefix: prefix, start: max(0, min(start, 999_999_999)), includeDate: withDate) }
     private var valid: Bool { !prefix.contains("/") && !prefix.contains(":") && !prefix.isEmpty && start >= 0 && start < 1_000_000_000 }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

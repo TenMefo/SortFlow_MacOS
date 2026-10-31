@@ -19,7 +19,7 @@ struct SortFlow: App {
         }
     }
     var body: some Scene {
-        Window("SortFlow", id: "main") {
+        WindowGroup("SortFlow", id: "main") {
             ContentView().environmentObject(manager).tint(.purple)
                 .onAppear {
                     // Używane wyłącznie przez automatyczny test uruchomienia na runnerze macOS.
@@ -49,10 +49,10 @@ struct SortFlow: App {
                 }
         }.defaultSize(width: 1280, height: 800)
         .commands {
-            CommandGroup(replacing: .undoRedo) {
-                Button(tr("Cofnij ostatnią operację", "Undo last operation")) { manager.undo() }.keyboardShortcut("z", modifiers: .command).disabled(!manager.canAct || manager.history.isEmpty)
+            CommandGroup(after: .undoRedo) {
+                Button(tr("Cofnij ostatnią operację", "Undo last operation")) { manager.undo() }.disabled(!manager.canAct || manager.history.isEmpty)
             }
-            CommandGroup(after: .newItem) {
+            CommandGroup(replacing: .newItem) {
                 Button(tr("Otwórz folder…", "Open folder…")) { manager.chooseFolder() }.keyboardShortcut("o", modifiers: .command).disabled(!manager.canAct)
             }
         }

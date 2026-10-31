@@ -266,7 +266,11 @@ final class FolderManager: ObservableObject {
             finishRecord(record)
             if UserDefaults.standard.object(forKey: "advanceAfterAction") as? Bool ?? true { selectedFiles = next.map { [$0] } ?? [] }
             else if mode == .copy { for item in record.items { completed.remove(item.original) } }
-            notice = "\(mode.title): \(record.items.count)/\(plans.count)" + (flag.isCancelled ? tr(" · Anulowano", " · Cancelled") : "")
+            if plans.count == 1, let item = record.items.first {
+                notice = (mode == .move ? tr("Przeniesiono: ", "Moved: ") : tr("Skopiowano: ", "Copied: ")) + item.original.lastPathComponent + " → " + item.current.deletingLastPathComponent().lastPathComponent
+            } else {
+                notice = "\(mode.title): \(record.items.count)/\(plans.count)" + (flag.isCancelled ? tr(" · Anulowano", " · Cancelled") : "")
+            }
             isBusy = false; rebuild(); persistSession(); if mode == .move { invalidateDuplicates() }
         }
     }

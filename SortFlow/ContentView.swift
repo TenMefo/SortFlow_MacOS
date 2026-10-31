@@ -304,7 +304,9 @@ struct ContentView: View {
     private var canCompare: Bool { let chosen = manager.files.filter { manager.selectedFiles.contains($0.url) }; return chosen.count == 2 && chosen.allSatisfy { $0.kind == .image || $0.kind == .raw } }
     private func ensureSelection() { let visible = Set(manager.displayFiles.map(\.url)); let selection = manager.selectedFiles.intersection(visible); if selection.isEmpty, let first = manager.displayFiles.first { manager.selectedFiles = [first.url] } else if selection != manager.selectedFiles { manager.selectedFiles = selection } }
     private func handleKey(_ key: String) -> Bool {
-        guard manager.canAct, mode == .files else { return false }
+        guard manager.canAct else { return false }
+        if key == "undo" { manager.undo(); return true }
+        guard mode == .files else { return false }
         if let number = Int(key), number >= 1, number <= min(9, manager.targets.count) { manager.transferSelected(to: manager.targets[number - 1].url); return true }
         switch key {
         case "left": manager.navigate(-1)
@@ -349,8 +351,10 @@ struct KeyboardBridge: NSViewRepresentable {
             self.action = action
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self, let window = self.view?.window, window === NSApp.keyWindow, NSApp.keyWindow?.sheetParent == nil,
-                      !(NSApp.keyWindow?.firstResponder is NSTextView), NSApp.modalWindow == nil,
-                      event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return event }
+                      !(NSApp.keyWindow?.firstResponder is NSTextView), NSApp.modalWindow == nil else { return event }
+                let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                if modifiers == .command && event.charactersIgnoringModifiers?.lowercased() == "z" { return self.action("undo") ? nil : event }
+                guard modifiers.isEmpty else { return event }
                 let key = event.keyCode == 123 ? "left" : event.keyCode == 124 ? "right" : event.charactersIgnoringModifiers?.lowercased() ?? ""
                 return self.action(key) ? nil : event
             }

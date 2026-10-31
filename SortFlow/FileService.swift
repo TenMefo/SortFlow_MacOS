@@ -173,7 +173,7 @@ enum FileService {
     static func renamePlan(_ urls: [URL], prefix: String, start: Int, includeDate: Bool) -> [PlannedTransfer] {
         let date = DateFormatter(); date.dateFormat = "yyyy-MM-dd"
         return urls.enumerated().map { index, url in
-            let base = (includeDate ? date.string(from: Date()) + "_" : "") + prefix + String(format: "%04d", start + index)
+            let base = (includeDate ? date.string(from: Date()) + "_" : "") + prefix + String(format: "%04lld", Int64(start) + Int64(index))
             var target = url.deletingLastPathComponent().appendingPathComponent(base)
             if !url.pathExtension.isEmpty { target.appendPathExtension(url.pathExtension) }
             return PlannedTransfer(source: url, destination: target)
