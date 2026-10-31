@@ -298,3 +298,21 @@ struct WaveformView: View {
         let peak = max(peaks.max() ?? 1, 0.001); return peaks.map { $0 / peak }
     }
 }
+
+struct ImageDimensions: View {
+    let url: URL
+    @State private var dimensions = ""
+    var body: some View {
+        Text(dimensions).foregroundStyle(.secondary)
+            .task(id: url) {
+                let value = await Task.detached(priority: .utility) { () -> String in
+                    guard let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+                          let values = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+                          let width = values[kCGImagePropertyPixelWidth] as? Int,
+                          let height = values[kCGImagePropertyPixelHeight] as? Int else { return "" }
+                    return "\(width) × \(height) px"
+                }.value
+                if !Task.isCancelled { dimensions = value }
+            }
+    }
+}

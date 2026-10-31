@@ -10,7 +10,23 @@ struct SortFlow: App {
                     // Używane wyłącznie przez automatyczny test uruchomienia na runnerze macOS.
                     if CommandLine.arguments.contains("--smoke-test") {
                         if let index = CommandLine.arguments.firstIndex(of: "--fixture"), CommandLine.arguments.indices.contains(index + 1) { manager.openFolder(URL(fileURLWithPath: CommandLine.arguments[index + 1])) }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { NSApplication.shared.terminate(nil) }
+                        NSApplication.shared.activate(ignoringOtherApps: true)
+                        Task { @MainActor in
+                            for _ in 0..<100 {
+                                if !manager.isLoading && !manager.files.isEmpty { break }
+                                try? await Task.sleep(nanoseconds: 100_000_000)
+                            }
+                            let images = manager.files.filter { $0.kind == .image }
+                            for _ in 0..<2 {
+                                for file in images {
+                                    manager.selectedFiles = [file.url]
+                                    try? await Task.sleep(nanoseconds: 140_000_000)
+                                }
+                            }
+                            if let document = manager.files.first(where: { $0.kind == .document }) { manager.selectedFiles = [document.url] }
+                            try? await Task.sleep(nanoseconds: 500_000_000)
+                            NSApplication.shared.terminate(nil)
+                        }
                     }
                 }
         }.defaultSize(width: 1280, height: 800)

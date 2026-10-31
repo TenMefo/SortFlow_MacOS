@@ -65,6 +65,7 @@ struct ContentView: View {
         }
         .task(id: manager.targets) { await refreshTargets() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)) { _ in Task { await refreshTargets() } }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in Task { await refreshTargets() } }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didUnmountNotification)) { _ in Task { await refreshTargets() } }
     }
     private var sidebar: some View {
@@ -170,8 +171,20 @@ struct ContentView: View {
             Picker(tr("Operacja", "Operation"), selection: $manager.transferMode) { ForEach(TransferMode.allCases, id: \.self) { Text($0.title).tag($0) } }.pickerStyle(.segmented)
             List {
                 ForEach(Array(manager.targets.enumerated()), id: \.element.id) { index, folder in
-                    let available = targetAvailability[folder.id] ?? false
-                    Button { manager.transferSelected(to: folder.url) } label: {
+                    destinationRow(index: index, folder: folder)
+                }.onMove { manager.moveTargets($0, $1) }
+            }.listStyle(.plain)
+            Button { manager.addTargets() } label: { Label(tr("Dodaj folder docelowy", "Add destination folder"), systemImage: "folder.badge.plus") }.buttonStyle(.borderless)
+            Divider()
+            Button { manager.deferSelected() } label: { Label(manager.deferredOnly ? tr("Przywróć do kolejki", "Return to queue") : tr("Do decyzji później", "Decide later"), systemImage: "clock.arrow.circlepath").frame(maxWidth: .infinity) }.disabled(manager.selectedFiles.isEmpty)
+            Button(role: .destructive) { manager.trashSelected() } label: { Label(tr("Do Kosza", "To Trash"), systemImage: "trash").frame(maxWidth: .infinity) }.buttonStyle(.bordered).tint(.red).disabled(manager.selectedFiles.isEmpty)
+            Text(tr("1–9: folder · ← →: nawigacja · L: później", "1–9: folder · ← →: navigate · L: later")).font(.caption2).foregroundStyle(.secondary)
+        }.padding(16).background(Color(nsColor: .controlBackgroundColor)).disabled(manager.isBusy || manager.isScanning)
+    }
+
+    private func destinationRow(index: Int, folder: MappedFolder) -> some View {
+        let available = targetAvailability[folder.id] ?? false
+        return Button { manager.transferSelected(to: folder.url) } label: {
                         HStack(spacing: 10) {
                             Image(systemName: available ? "folder.fill" : "externaldrive.badge.exclamationmark").font(.title3).foregroundStyle(available ? Color(hex: folder.colorHex) : .secondary)
                             VStack(alignment: .leading) {
@@ -193,14 +206,6 @@ struct ContentView: View {
                             guard available, manager.canAct else { return false }
                             loadDroppedURLs(providers) { manager.transferSelected(to: folder.url, external: $0) }; return true
                         }
-                }.onMove { manager.moveTargets($0, $1) }
-            }.listStyle(.plain)
-            Button { manager.addTargets() } label: { Label(tr("Dodaj folder docelowy", "Add destination folder"), systemImage: "folder.badge.plus") }.buttonStyle(.borderless)
-            Divider()
-            Button { manager.deferSelected() } label: { Label(manager.deferredOnly ? tr("Przywróć do kolejki", "Return to queue") : tr("Do decyzji później", "Decide later"), systemImage: "clock.arrow.circlepath").frame(maxWidth: .infinity) }.disabled(manager.selectedFiles.isEmpty)
-            Button(role: .destructive) { manager.trashSelected() } label: { Label(tr("Do Kosza", "To Trash"), systemImage: "trash").frame(maxWidth: .infinity) }.buttonStyle(.bordered).tint(.red).disabled(manager.selectedFiles.isEmpty)
-            Text(tr("1–9: folder · ← →: nawigacja · L: później", "1–9: folder · ← →: navigate · L: later")).font(.caption2).foregroundStyle(.secondary)
-        }.padding(16).background(Color(nsColor: .controlBackgroundColor)).disabled(manager.isBusy || manager.isScanning)
     }
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .navigation) {
@@ -267,7 +272,7 @@ struct ContentView: View {
     private func metadata(_ file: FileEntry) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Divider()
-            HStack { Text(file.kind.title); Spacer(); Text(file.size.byteLabel) }.font(.caption.bold())
+            HStack { Text(file.kind.title); ImageDimensions(url: file.url); Spacer(); Text(file.size.byteLabel) }.font(.caption.bold())
             Text(tr("Utworzono: ", "Created: ") + file.created.formatted(date: .abbreviated, time: .shortened)).font(.caption)
             Text(tr("Zmieniono: ", "Modified: ") + file.modified.formatted(date: .abbreviated, time: .shortened)).font(.caption)
             Text(file.url.path).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
@@ -330,21 +335,24 @@ private func loadDroppedURLs(_ providers: [NSItemProvider], completion: @escapin
 struct KeyboardBridge: NSViewRepresentable {
     var action: (String) -> Bool
     func makeCoordinator() -> Coordinator { Coordinator(action: action) }
-    func makeNSView(context: Context) -> NSView { NSView() }
+    func makeNSView(context: Context) -> NSView { let view = NSView(); context.coordinator.view = view; return view }
+    static func dismantleNSView(_ view: NSView, coordinator: Coordinator) { coordinator.stop() }
     func updateNSView(_ view: NSView, context: Context) { context.coordinator.action = action }
     class Coordinator {
         var action: (String) -> Bool
         var monitor: Any?
+        weak var view: NSView?
         init(action: @escaping (String) -> Bool) {
             self.action = action
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                guard let self, NSApp.keyWindow?.identifier?.rawValue != "com.apple.SwiftUI.Settings", NSApp.keyWindow?.sheetParent == nil,
+                guard let self, let window = self.view?.window, window === NSApp.keyWindow, NSApp.keyWindow?.sheetParent == nil,
                       !(NSApp.keyWindow?.firstResponder is NSTextView), NSApp.modalWindow == nil,
-                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+                      event.modifierFlags.intersection([.command, .control, .option, .shift]).isEmpty else { return event }
                 let key = event.keyCode == 123 ? "left" : event.keyCode == 124 ? "right" : event.charactersIgnoringModifiers?.lowercased() ?? ""
                 return self.action(key) ? nil : event
             }
         }
+        func stop() { if let monitor { NSEvent.removeMonitor(monitor); self.monitor = nil } }
         deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
     }
 }

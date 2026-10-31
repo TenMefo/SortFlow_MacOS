@@ -62,6 +62,10 @@ final class FolderManager: ObservableObject {
         support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("SortFlow", isDirectory: true)
         try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
         let defaults = UserDefaults.standard
+        if defaults.object(forKey: "previewStyle") == nil, let old = defaults.string(forKey: "previewMode") {
+            defaults.set(old == "aspectFill" ? "fill" : old == "fitWithBlur" ? "blur" : "fit", forKey: "previewStyle")
+        }
+        if defaults.object(forKey: "documentPadded") == nil, let old = defaults.string(forKey: "docPreviewMode") { defaults.set(old != "fullWidth", forKey: "documentPadded") }
         if let data = defaults.data(forKey: "savedWorkspaces"), let decoded = try? JSONDecoder().decode([Workspace].self, from: data), !decoded.isEmpty { workspaces = decoded }
         else {
             let folders = defaults.data(forKey: "mappedFolders").flatMap { try? JSONDecoder().decode([MappedFolder].self, from: $0) } ?? []
@@ -216,9 +220,10 @@ final class FolderManager: ObservableObject {
         let urls = external ?? displayFiles.filter { selectedFiles.contains($0.url) }.map(\.url)
         guard !urls.isEmpty, canAct else { return }
         let linked = UserDefaults.standard.bool(forKey: "linkedFiles")
-        isBusy = true
+        isBusy = true; operationFlag = CancellationFlag(); let flag = operationFlag
         Task {
             let expanded = await Task.detached { linked ? FileService.linkedFiles(urls) : urls }.value
+            guard !flag.isCancelled else { isBusy = false; notice = tr("Anulowano", "Cancelled"); return }
             isBusy = false
             runTransfers(expanded.map { PlannedTransfer(source: $0, destination: folder.appendingPathComponent($0.lastPathComponent)) }, mode: transferMode)
         }
