@@ -71,6 +71,16 @@ struct CoreTests {
         let legacy = "{\"id\":\"00000000-0000-0000-0000-000000000001\",\"name\":\"Legacy\",\"folders\":[]}"
         let workspace = try JSONDecoder().decode(Workspace.self, from: Data(legacy.utf8))
         try check(workspace.source == nil && workspace.folders.isEmpty, "Legacy workspace migration")
+        let historyDir = root.appendingPathComponent("history")
+        var historyRecord = HistoryRecord(title: "Test", items: [replacement])
+        try HistoryStore.append(historyRecord, directory: historyDir)
+        historyRecord.items.append(copy)
+        try HistoryStore.append(historyRecord, directory: historyDir)
+        try check(try HistoryStore.load(historyRecord.id, directory: historyDir).count == 2, "Interrupted batch journal is recoverable")
+        try HistoryStore.save(historyRecord, directory: historyDir)
+        try check(try HistoryStore.load(historyRecord.id, directory: historyDir).count == 2 && historyRecord.summary.items.count == 1 && historyRecord.summary.count == 2, "History summary keeps bounded live metadata")
+        try HistoryStore.remove(historyRecord.id, directory: historyDir)
+        try check(try fm.contentsOfDirectory(atPath: historyDir.path).isEmpty, "History cleanup removes journal and metadata")
         print("ALL CORE TESTS PASSED")
     }
 }

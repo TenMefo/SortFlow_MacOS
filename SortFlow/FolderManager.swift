@@ -254,7 +254,7 @@ final class FolderManager: ObservableObject {
                 switch result {
                 case .success(let item):
                     if let item {
-                        record.items.append(item); persistRecord(record)
+                        record.items.append(item); persistRecord(record, incremental: true)
                         completed.insert(plan.source); deferred.remove(plan.source)
                         if mode == .move { stats.moved += 1 } else { stats.copied += 1 }
                         stats.destinations[plan.destination.deletingLastPathComponent().path, default: 0] += 1
@@ -299,7 +299,7 @@ final class FolderManager: ObservableObject {
                 }.value
                 switch result {
                 case .success(let item):
-                    record.items.append(item); persistRecord(record); completed.insert(url); deferred.remove(url); stats.trashed += 1
+                    record.items.append(item); persistRecord(record, incremental: true); completed.insert(url); deferred.remove(url); stats.trashed += 1
                     if let entry = files.first(where: { $0.url == url }) { stats.bytes += entry.size }
                     for index in duplicateGroups.indices { duplicateGroups[index].files.removeAll { $0.url == url } }
                 case .failure(let error): if !(error is CancellationError) { errors.append("\(url.lastPathComponent): \(error.localizedDescription)") }
@@ -337,27 +337,39 @@ final class FolderManager: ObservableObject {
     func cancelScan() { scanFlag.cancel(); listFlag.cancel() }
     private func invalidateDuplicates() { duplicateGroups = []; selectedGroupID = nil }
     private var historyDirectory: URL { support.appendingPathComponent("History", isDirectory: true) }
-    private func persistRecord(_ record: HistoryRecord) {
+    private func persistRecord(_ record: HistoryRecord, incremental: Bool = false) {
         do {
-            try FileManager.default.createDirectory(at: historyDirectory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(record).write(to: historyDirectory.appendingPathComponent(record.id.uuidString + ".json"), options: .atomic)
+            if incremental { try HistoryStore.append(record, directory: historyDirectory) }
+            else { try HistoryStore.save(record, directory: historyDirectory) }
         } catch { if errors.count < 1000 { errors.append(tr("Nie zapisano historii: ", "History could not be saved: ") + error.localizedDescription) } }
     }
     private func finishRecord(_ record: HistoryRecord) {
         guard !record.items.isEmpty else { return }
-        history.insert(record, at: 0); if history.count > historyLimit { history = Array(history.prefix(historyLimit)) }
+        persistRecord(record); history.insert(record.summary, at: 0); if history.count > historyLimit { history = Array(history.prefix(historyLimit)) }
     }
     func loadHistory(more: Bool = false) {
         if more { historyLimit += 100 }
         let urls = (try? FileManager.default.contentsOfDirectory(at: historyDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         // Wczytujemy tylko widoczną stronę historii; starsze rekordy pozostają na dysku.
-        let recent = urls.sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }.prefix(historyLimit)
-        history = recent.compactMap { try? JSONDecoder().decode(HistoryRecord.self, from: Data(contentsOf: $0)) }.sorted { $0.date > $1.date }
+        let recent = urls.filter { $0.pathExtension == "json" && !$0.lastPathComponent.hasSuffix(".meta.json") }.sorted { ((try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) > ((try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }.prefix(historyLimit)
+        history = recent.compactMap { url in
+            let meta = url.deletingPathExtension().appendingPathExtension("meta.json")
+            if let data = try? Data(contentsOf: meta), let record = try? JSONDecoder().decode(HistoryRecord.self, from: data) { return record }
+            return (try? JSONDecoder().decode(HistoryRecord.self, from: Data(contentsOf: url)))?.summary
+        }.sorted { $0.date > $1.date }
     }
     func undo(_ record: HistoryRecord? = nil) {
         guard canAct, let record = record ?? history.first else { return }
         isBusy = true; errors = []; operationFlag = CancellationFlag(); let flag = operationFlag
+        let directory = historyDirectory
         Task {
+            let loaded = await Task.detached { Result { try HistoryStore.load(record.id, directory: directory) } }.value
+            let full: HistoryRecord
+            switch loaded {
+            case .success(let value): full = value
+            case .failure(let error): errors = [error.localizedDescription]; isBusy = false; return
+            }
+            let record = full
             var remaining = record.items
             for item in record.items.reversed() {
                 if flag.isCancelled { break }
@@ -367,7 +379,7 @@ final class FolderManager: ObservableObject {
                 case .failure(let error): errors.append("\(item.original.lastPathComponent): \(error.localizedDescription)")
                 }
                 var updated = record; updated.items = remaining
-                if remaining.isEmpty { try? FileManager.default.removeItem(at: historyDirectory.appendingPathComponent(record.id.uuidString + ".json")) }
+                if remaining.isEmpty { try? HistoryStore.remove(record.id, directory: historyDirectory) }
                 else { persistRecord(updated) }
             }
             loadHistory(); isBusy = false; invalidateDuplicates(); loadFiles()

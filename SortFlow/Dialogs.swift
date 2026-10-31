@@ -121,7 +121,7 @@ struct HistoryView: View {
             Text(tr("Historia i kopie zastąpionych plików pozostają dostępne po ponownym uruchomieniu.", "History and backups of replaced files remain available after restarting.")).font(.caption).foregroundStyle(.secondary)
             List(manager.history) { record in
                 HStack {
-                    VStack(alignment: .leading) { Text(record.title + " · \(record.items.count)"); Text(record.date.formatted()).font(.caption).foregroundStyle(.secondary); if let first = record.items.first { Text(first.original.lastPathComponent).font(.caption).lineLimit(1) } }
+                    VStack(alignment: .leading) { Text(record.title + " · \(record.count)"); Text(record.date.formatted()).font(.caption).foregroundStyle(.secondary); if let first = record.items.first { Text(first.original.lastPathComponent).font(.caption).lineLimit(1) } }
                     Spacer(); Button(tr("Cofnij", "Undo")) { manager.undo(record) }.disabled(!manager.canAct)
                 }.padding(.vertical, 4)
             }

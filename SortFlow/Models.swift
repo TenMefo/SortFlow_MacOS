@@ -137,6 +137,9 @@ struct HistoryRecord: Identifiable, Codable, Sendable {
     var date = Date()
     var title: String
     var items: [UndoItem]
+    var itemCount: Int? = nil
+    var count: Int { itemCount ?? items.count }
+    var summary: HistoryRecord { var result = self; result.itemCount = count; result.items = Array(items.prefix(1)); return result }
 }
 struct OperationReport: Sendable {
     var items: [UndoItem] = []
