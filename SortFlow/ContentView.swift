@@ -194,7 +194,7 @@ struct ContentView: View {
                             Spacer()
                             if index < 9 { Text("\(index + 1)").font(.caption.monospaced()).padding(5).background(.quaternary, in: RoundedRectangle(cornerRadius: 4)) }
                         }.padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                    }.buttonStyle(.plain).disabled(!manager.canAct || manager.selectedFiles.isEmpty || !available)
+                    }.buttonStyle(.plain).disabled(!manager.canAct || !available)
                         .listRowBackground(hoveringTarget == folder.id ? Color.accentColor.opacity(0.15) : Color.clear)
                         .help(folder.url.path)
                         .contextMenu {
@@ -243,7 +243,10 @@ struct ContentView: View {
     }
     private var statusBar: some View {
         HStack(spacing: 12) {
-            if manager.isBusy {
+            if manager.isScanning {
+                ProgressView().controlSize(.small); Text(manager.progress.stage)
+                Button(tr("Anuluj skanowanie", "Cancel scan")) { manager.cancelScan() }
+            } else if manager.isBusy {
                 ProgressView(value: Double(manager.operationDone), total: Double(max(1, manager.operationTotal))).frame(width: 100)
                 Text("\(manager.operationDone)/\(manager.operationTotal)").monospacedDigit()
                 Button(tr("Anuluj pozostałe", "Cancel remaining")) { manager.cancelOperation() }
