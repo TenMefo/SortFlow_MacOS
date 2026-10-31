@@ -6,17 +6,19 @@ import Darwin
 // Jawny cykl życia okna: aplikacja zawsze otwiera jedno główne okno, również bez zapisanej sesji systemu.
 @MainActor
 final class SortFlowDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    static weak var shared: SortFlowDelegate?
     let manager = FolderManager()
     private var window: NSWindow?
+    private var settingsWindow: NSWindow?
     private var changes: AnyCancellable?
     override init() {
-        super.init()
+        super.init(); Self.shared = self
         changes = manager.objectWillChange.sink { [weak self] in self?.objectWillChange.send() }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         SmokeHarness.log("DID_FINISH_LAUNCHING")
         let root = ContentView().environmentObject(manager).tint(.purple)
-            .onAppear { SmokeHarness.start(manager) }
+            .onAppear { [weak self] in if let self { SmokeHarness.start(self.manager) } }
         let controller = NSHostingController(rootView: root)
         let window = NSWindow(contentViewController: controller)
         window.title = "SortFlow"
@@ -29,6 +31,16 @@ final class SortFlowDelegate: NSObject, NSApplicationDelegate, ObservableObject 
         self.window = window
         NSApplication.shared.activate(ignoringOtherApps: true)
         SmokeHarness.log("WINDOW_CREATED")
+    }
+    func showSettings() {
+        if settingsWindow == nil {
+            let controller = NSHostingController(rootView: SettingsView().tint(.purple))
+            let settings = NSWindow(contentViewController: controller)
+            settings.title = tr("Ustawienia SortFlow", "SortFlow Settings")
+            settings.styleMask = [.titled, .closable]
+            settings.isReleasedWhenClosed = false; settings.center(); settingsWindow = settings
+        }
+        settingsWindow?.makeKeyAndOrderFront(nil)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -44,7 +56,7 @@ private enum SmokeHarness {
         let url = URL(fileURLWithPath: CommandLine.arguments[index + 1])
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
         if let handle = try? FileHandle(forWritingTo: url) {
-            defer { try? handle.close() }; try? handle.seekToEnd(); try? handle.write(contentsOf: Data((value + "\n").utf8))
+            defer { try? handle.close() }; _ = try? handle.seekToEnd(); try? handle.write(contentsOf: Data((value + "\n").utf8))
         }
     }
     static func start(_ manager: FolderManager) {
@@ -78,6 +90,9 @@ struct SortFlow: App {
     var body: some Scene {
         Settings { SettingsView().tint(.purple) }
             .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button(tr("Ustawienia…", "Settings…")) { delegate.showSettings() }.keyboardShortcut(",", modifiers: .command)
+                }
                 CommandGroup(after: .undoRedo) {
                     Button(tr("Cofnij ostatnią operację", "Undo last operation")) { delegate.manager.undo() }.disabled(!delegate.manager.canAct || delegate.manager.history.isEmpty)
                 }

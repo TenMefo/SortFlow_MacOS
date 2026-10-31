@@ -237,7 +237,7 @@ struct ContentView: View {
                 Button(tr("Historia operacji…", "Operation history…")) { showHistory = true }
                 Button(tr("Podsumowanie sesji…", "Session summary…")) { showSummary = true }
                 Button(tr("Raport błędów…", "Error report…")) { showReport = true }
-                SettingsLink { Text(tr("Ustawienia…", "Settings…")) }
+                Button(tr("Ustawienia…", "Settings…")) { SortFlowDelegate.shared?.showSettings() }
             } label: { Image(systemName: "ellipsis.circle") }
         }
     }

@@ -9,6 +9,7 @@
 - Oczekiwany SHA-256, anulowanie i błąd odczytu/brak pliku.
 - SQLite: duplikaty, pliki o tym samym rozmiarze i różnej zawartości, hardlinki, bajty do odzyskania.
 - Porównanie bajtów, rekurencja, powiązane rozszerzenia z wielkimi literami, zmiana nazw i migracja starego profilu.
+- Dziennik przerwanej partii i cofania, krótkie podsumowania historii w RAM oraz sprzątanie zapisów historii.
 - Release arm64+x86_64, podpis ad-hoc, uruchomienie procesu GUI, pakowanie i weryfikacja obrazu DMG.
 
 ## Ręcznie na docelowym Macu

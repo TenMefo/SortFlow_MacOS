@@ -371,17 +371,21 @@ final class FolderManager: ObservableObject {
             }
             let record = full
             var remaining = record.items
-            for item in record.items.reversed() {
+            for (index, item) in record.items.enumerated().reversed() {
                 if flag.isCancelled { break }
                 let result = await Task.detached { Result { try FileService.undo(item) } }.value
                 switch result {
-                case .success: remaining.removeAll { $0.original == item.original && $0.current == item.current }; completed.remove(item.original)
+                case .success:
+                    remaining.remove(at: index); completed.remove(item.original)
+                    var updated = record; updated.items = remaining
+                    do { try HistoryStore.markUndone(item, remaining: updated, directory: directory) }
+                    catch { errors.append(error.localizedDescription) }
                 case .failure(let error): errors.append("\(item.original.lastPathComponent): \(error.localizedDescription)")
                 }
-                var updated = record; updated.items = remaining
-                if remaining.isEmpty { try? HistoryStore.remove(record.id, directory: historyDirectory) }
-                else { persistRecord(updated) }
             }
+            var updated = record; updated.items = remaining
+            if remaining.isEmpty { try? HistoryStore.remove(record.id, directory: historyDirectory) }
+            else { persistRecord(updated) }
             loadHistory(); isBusy = false; invalidateDuplicates(); loadFiles()
             notice = remaining.isEmpty ? tr("Cofnięto operację", "Operation undone") : tr("Nie cofnięto wszystkich plików — możesz ponowić", "Some files were not restored — you can retry")
         }

@@ -25,7 +25,7 @@ enum HistoryStore {
         var full = record; full.itemCount = nil
         try JSONEncoder().encode(full).write(to: directory.appendingPathComponent(record.id.uuidString + ".json"), options: .atomic)
         try JSONEncoder().encode(full.summary).write(to: directory.appendingPathComponent(record.id.uuidString + ".meta.json"), options: .atomic)
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent(record.id.uuidString + ".jsonl"))
+        for suffix in [".jsonl", ".undo.jsonl"] { try? FileManager.default.removeItem(at: directory.appendingPathComponent(record.id.uuidString + suffix)) }
     }
     static func load(_ id: UUID, directory: URL) throws -> HistoryRecord {
         var record = try JSONDecoder().decode(HistoryRecord.self, from: Data(contentsOf: directory.appendingPathComponent(id.uuidString + ".json")))
@@ -41,11 +41,25 @@ enum HistoryStore {
                 if known.insert(key).inserted { record.items.append(item) }
             }
         }
+        let undone = directory.appendingPathComponent(id.uuidString + ".undo.jsonl")
+        if FileManager.default.fileExists(atPath: undone.path) {
+            let data = try Data(contentsOf: undone)
+            let keys = Set(data.split(separator: 10).compactMap { try? JSONDecoder().decode(UndoItem.self, from: Data($0)) }.map { $0.original.absoluteString + "|" + $0.current.absoluteString })
+            record.items.removeAll { keys.contains($0.original.absoluteString + "|" + $0.current.absoluteString) }
+        }
         record.itemCount = nil; return record
+    }
+    static func markUndone(_ item: UndoItem, remaining: HistoryRecord, directory: URL) throws {
+        let journal = directory.appendingPathComponent(remaining.id.uuidString + ".undo.jsonl")
+        if !FileManager.default.fileExists(atPath: journal.path) { FileManager.default.createFile(atPath: journal.path, contents: nil) }
+        let handle = try FileHandle(forWritingTo: journal)
+        defer { try? handle.close() }
+        try handle.seekToEnd(); var data = try JSONEncoder().encode(item); data.append(10); try handle.write(contentsOf: data)
+        try JSONEncoder().encode(remaining.summary).write(to: directory.appendingPathComponent(remaining.id.uuidString + ".meta.json"), options: .atomic)
     }
     static func remove(_ id: UUID, directory: URL) throws {
         let fm = FileManager.default
         try fm.removeItem(at: directory.appendingPathComponent(id.uuidString + ".json"))
-        for suffix in [".jsonl", ".meta.json"] { try? fm.removeItem(at: directory.appendingPathComponent(id.uuidString + suffix)) }
+        for suffix in [".jsonl", ".undo.jsonl", ".meta.json"] { try? fm.removeItem(at: directory.appendingPathComponent(id.uuidString + suffix)) }
     }
 }
