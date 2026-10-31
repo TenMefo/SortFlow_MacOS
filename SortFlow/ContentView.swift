@@ -27,6 +27,7 @@ struct ContentView: View {
     @State private var targetAvailability: [UUID: Bool] = [:]
     private var group: DuplicateGroup? { manager.duplicateGroups.first { $0.id == manager.selectedGroupID } }
     var body: some View {
+        VStack(spacing: 0) {
         NavigationSplitView(columnVisibility: $columns) {
             sidebar.navigationSplitViewColumnWidth(min: 230, ideal: 280, max: 400)
         } detail: {
@@ -35,10 +36,12 @@ struct ContentView: View {
                 if mode == .files { targetPanel.frame(minWidth: 210, idealWidth: 250, maxWidth: 340) }
             }
         }
+        Divider()
+        statusBar
+        }
         .navigationTitle("SortFlow")
         .navigationSubtitle(manager.currentFolder?.lastPathComponent ?? tr("Uporządkuj swoje pliki", "Make room for what matters"))
         .toolbar { toolbar }
-        .safeAreaInset(edge: .bottom, spacing: 0) { statusBar }
         .background(KeyboardBridge { handleKey($0) }.frame(width: 0, height: 0))
         .frame(minWidth: 900, minHeight: 520)
         .onChange(of: focused) { _, value in columns = value ? .detailOnly : .all }

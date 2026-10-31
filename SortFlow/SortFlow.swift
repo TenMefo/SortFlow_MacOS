@@ -73,7 +73,7 @@ private enum SmokeHarness {
             guard !manager.files.isEmpty else { log("SMOKE_NO_FILES"); Darwin.exit(3) }
             let images = manager.files.filter { $0.kind == .image }
             if let first = images.first { manager.selectedFiles = [first.url] }
-            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            try? await Task.sleep(nanoseconds: 12_000_000_000)
             for _ in 0..<2 {
                 for file in images { manager.selectedFiles = [file.url]; try? await Task.sleep(nanoseconds: 140_000_000) }
             }
